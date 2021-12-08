@@ -1,0 +1,7 @@
+# Build dirs
+target/
+
+# IDE folders
+.idea/
+
+Cargo.lock
