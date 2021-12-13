@@ -2,8 +2,8 @@ use halo2::arithmetic::CurveAffine;
 use halo2::circuit::Region;
 use halo2::plonk::Error;
 use halo2::transcript::{EncodedChallenge, TranscriptRead};
-use halo2wrong::circuit::AssignedValue;
 use halo2wrong::circuit::ecc::AssignedPoint;
+use halo2wrong::circuit::AssignedValue;
 
 pub struct CommittedVar<C: CurveAffine> {
     random_poly_commitment: AssignedPoint<C>,
@@ -53,5 +53,3 @@ impl<C: CurveAffine> ConstructedVar<C> {
         unimplemented!()
     }
 }
-
-

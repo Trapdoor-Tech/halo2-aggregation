@@ -2,8 +2,8 @@ use crate::transcript::ChallengeScalarVar;
 
 mod lookup;
 mod permutation;
-mod vanishing;
 mod transcript;
+mod vanishing;
 
 #[derive(Clone, Copy, Debug)]
 struct Theta;
