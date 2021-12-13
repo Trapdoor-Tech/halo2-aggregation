@@ -3,7 +3,7 @@ use halo2::circuit::Region;
 use halo2::plonk::Error;
 use halo2::transcript::{EncodedChallenge, TranscriptRead};
 use halo2wrong::circuit::ecc::AssignedPoint;
-use halo2wrong::circuit::AssignedInteger;
+use halo2wrong::circuit::AssignedValue;
 
 pub struct PermutationCommitmentsVar<C: CurveAffine> {
     permuted_input_commitment: AssignedPoint<C>, // A'
@@ -17,11 +17,11 @@ pub struct CommittedVar<C: CurveAffine> {
 
 pub struct EvaluatedVar<C: CurveAffine> {
     committed: CommittedVar<C>,
-    product_eval: AssignedInteger<C::ScalarExt>, // Z(z)
-    product_next_eval: AssignedInteger<C::ScalarExt>, // Z(z*omega)
-    permuted_input_eval: AssignedInteger<C::ScalarExt>, // A'(z)
-    permuted_input_inv_eval: AssignedInteger<C::ScalarExt>, // A'(omega^(-1)*z)
-    permuted_table_eval: AssignedInteger<C::ScalarExt>, // S'(z)
+    product_eval: AssignedValue<C::ScalarExt>,      // Z(z)
+    product_next_eval: AssignedValue<C::ScalarExt>, // Z(z*omega)
+    permuted_input_eval: AssignedValue<C::ScalarExt>, // A'(z)
+    permuted_input_inv_eval: AssignedValue<C::ScalarExt>, // A'(omega^(-1)*z)
+    permuted_table_eval: AssignedValue<C::ScalarExt>, // S'(z)
 }
 
 impl<C: CurveAffine> PermutationCommitmentsVar<C> {

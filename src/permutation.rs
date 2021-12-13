@@ -3,7 +3,7 @@ use halo2::circuit::Region;
 use halo2::plonk::{ConstraintSystem, Error, VerifyingKey};
 use halo2::transcript::{EncodedChallenge, Transcript, TranscriptRead};
 use halo2wrong::circuit::ecc::AssignedPoint;
-use halo2wrong::circuit::AssignedInteger;
+use halo2wrong::circuit::AssignedValue;
 use std::io;
 
 pub struct CommittedVar<C: CurveAffine> {
@@ -13,9 +13,9 @@ pub struct CommittedVar<C: CurveAffine> {
 
 pub struct EvaluatedSetVar<C: CurveAffine> {
     permutation_product_commitment: AssignedPoint<C::ScalarExt>,
-    permutation_product_eval: AssignedInteger<C::ScalarExt>, // Zp(z)
-    permutation_product_next_eval: AssignedInteger<C::ScalarExt>, // Zp(z*omega)
-    permutation_product_last_eval: Option<AssignedInteger<C::ScalarExt>>,
+    permutation_product_eval: AssignedValue<C::ScalarExt>, // Zp(z)
+    permutation_product_next_eval: AssignedValue<C::ScalarExt>, // Zp(z*omega)
+    permutation_product_last_eval: Option<AssignedValue<C::ScalarExt>>,
 }
 
 pub struct EvaluatedVar<C: CurveAffine> {
@@ -43,7 +43,7 @@ impl<C: CurveAffine> CommittedVar<C> {
 }
 
 pub struct CommonEvaluatedVar<C: CurveAffine> {
-    permutation_evals: Vec<AssignedInteger<C::ScalarExt>>, // { sigma_i(z) }
+    permutation_evals: Vec<AssignedValue<C::ScalarExt>>, // { sigma_i(z) }
 }
 
 pub struct VerifyingKeyVar<C: CurveAffine> {
