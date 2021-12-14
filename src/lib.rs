@@ -1,6 +1,7 @@
 use crate::transcript::ChallengeScalarVar;
 
 mod lookup;
+mod multiopen;
 mod permutation;
 mod transcript;
 mod vanishing;
