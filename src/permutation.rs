@@ -1,13 +1,13 @@
+use crate::multiopen::VerifierQuery;
+use crate::{ChallengeBeta, ChallengeGamma, ChallengeX};
 use halo2::arithmetic::{CurveAffine, FieldExt};
 use halo2::circuit::Region;
 use halo2::plonk::{ConstraintSystem, Error, VerifyingKey};
+use halo2::poly::Rotation;
 use halo2::transcript::{EncodedChallenge, Transcript, TranscriptRead};
 use halo2wrong::circuit::ecc::AssignedPoint;
 use halo2wrong::circuit::AssignedValue;
 use std::{io, iter};
-use halo2::poly::Rotation;
-use crate::{ChallengeBeta, ChallengeGamma, ChallengeX};
-use crate::multiopen::VerifierQuery;
 
 pub struct CommittedVar<C: CurveAffine> {
     // commitment of grand product polynomials of permutation argument
@@ -105,7 +105,7 @@ impl<C: CurveAffine> EvaluatedVar<C> {
         &self,
         blinding_factors: usize,
     ) -> impl Iterator<Item = VerifierQuery<C>> + Clone {
-        let last_rot = Rotation((-blinding_factors+1) as i32);
+        let last_rot = Rotation((-blinding_factors + 1) as i32);
 
         iter::empty()
             .chain(self.sets.iter().flat_map(move |set| {
