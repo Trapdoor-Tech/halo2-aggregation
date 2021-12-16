@@ -77,16 +77,16 @@ impl<C: CurveAffine> EvaluatedVar<C> {
     pub fn expressions<'a>(
         &'a self,
         common: &'a CommonEvaluatedVar<C>,
-        advice_evals: &'a [AssignedValue<C>],
-        fixed_evals: &'a [AssignedValue<C>],
-        instance_evals: &'a [AssignedValue<C>],
-        l_0: AssignedValue<C>,
-        l_last: AssignedValue<C>,
-        l_blind: AssignedValue<C>,
+        advice_evals: &'a [AssignedValue<C::ScalarExt>],
+        fixed_evals: &'a [AssignedValue<C::ScalarExt>],
+        instance_evals: &'a [AssignedValue<C::ScalarExt>],
+        l_0: AssignedValue<C::ScalarExt>,
+        l_last: AssignedValue<C::ScalarExt>,
+        l_blind: AssignedValue<C::ScalarExt>,
         beta: ChallengeBeta<C>,
         gamma: ChallengeGamma<C>,
         x: ChallengeX<C>,
-    ) -> Result<Vec<AssignedValue<C>>, Error> {
+    ) -> Result<Vec<AssignedValue<C::ScalarExt>>, Error> {
         unimplemented!()
 
         // 1. l_0(x) * (1 - ZP_0(x)) = 0
@@ -102,9 +102,9 @@ impl<C: CurveAffine> EvaluatedVar<C> {
     }
 
     pub fn queries(
-        &self,
-        blinding_factors: usize,
-    ) -> impl Iterator<Item = VerifierQuery<C>> + Clone {
+        & self,
+        blinding_factors: isize,
+    ) -> Vec<VerifierQuery<C>> {
         let last_rot = Rotation((-blinding_factors + 1) as i32);
 
         iter::empty()
@@ -128,5 +128,6 @@ impl<C: CurveAffine> EvaluatedVar<C> {
                     set.permutation_product_last_eval.clone().unwrap(),
                 ))
             }))
+            .collect()
     }
 }

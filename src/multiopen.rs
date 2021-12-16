@@ -3,15 +3,15 @@ use halo2::poly::Rotation;
 use halo2wrong::circuit::ecc::AssignedPoint;
 use halo2wrong::circuit::AssignedValue;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct VerifierQuery<C: CurveAffine> {
-    commitment: AssignedPoint<C>,
+    commitment: AssignedPoint<C::ScalarExt>,
     rotation: Rotation,
-    eval: AssignedValue<C>,
+    eval: AssignedValue<C::ScalarExt>,
 }
 
 impl<C: CurveAffine> VerifierQuery<C> {
-    pub fn new(commitment: AssignedPoint<C>, rotation: Rotation, eval: AssignedValue<C>) -> Self {
+    pub fn new(commitment: AssignedPoint<C::ScalarExt>, rotation: Rotation, eval: AssignedValue<C::ScalarExt>) -> Self {
         VerifierQuery {
             commitment,
             rotation,

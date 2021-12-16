@@ -4,7 +4,7 @@ use halo2wrong::circuit::ecc::AssignedPoint;
 use halo2wrong::circuit::AssignedValue;
 use std::marker::PhantomData;
 
-#[derive(Copy, CLone, Debug)]
+#[derive(Clone, Debug)]
 pub struct ChallengeScalarVar<C: CurveAffine, T> {
     inner: AssignedValue<C::ScalarExt>,
     _marker: PhantomData<T>,
