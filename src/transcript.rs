@@ -10,6 +10,12 @@ pub struct ChallengeScalarVar<C: CurveAffine, T> {
     _marker: PhantomData<T>,
 }
 
+impl<C: CurveAffine, T> ChallengeScalarVar<C, T> {
+    pub fn value(&self) -> AssignedValue<C::ScalarExt> {
+        self.inner.clone()
+    }
+}
+
 pub trait TranscriptChip<C: CurveAffine> {
     fn squeeze_challenge_scalar<T>(
         &mut self,
