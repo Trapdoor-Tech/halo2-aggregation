@@ -1,15 +1,15 @@
 use crate::multiopen::VerifierQuery;
 use crate::{ChallengeBeta, ChallengeGamma, ChallengeTheta};
-use halo2::arithmetic::{CurveAffine, Field};
+use halo2::arithmetic::{CurveAffine, Field, FieldExt};
 use halo2::circuit::{Chip, Region};
-use halo2::plonk::{Error, Expression};
 use halo2::plonk::Error::TranscriptError;
+use halo2::plonk::{Error, Expression};
 use halo2::poly::Rotation;
 use halo2::transcript::{EncodedChallenge, Transcript, TranscriptRead};
 use halo2wrong::circuit::ecc::base_field_ecc::{BaseFieldEccChip, BaseFieldEccInstruction};
 use halo2wrong::circuit::ecc::AssignedPoint;
+use halo2wrong::circuit::main_gate::{MainGate, MainGateColumn, MainGateInstructions};
 use halo2wrong::circuit::{AssignedValue, UnassignedValue};
-use halo2wrong::circuit::main_gate::{MainGateColumn, MainGateInstructions};
 use std::iter;
 use std::marker::PhantomData;
 
@@ -91,22 +91,39 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> LookupChip
         let (z, z_w, a, a_prev, s) = {
             match self.transcript.as_mut() {
                 None => (None, None, None, None, None),
-                Some(t) => {
-                    (
-                        Some(t.read_scalar().map_err(|_| TranscriptError)?),
-                        Some(t.read_scalar().map_err(|_| TranscriptError)?),
-                        Some(t.read_scalar().map_err(|_| TranscriptError)?),
-                        Some(t.read_scalar().map_err(|_| TranscriptError)?),
-                        Some(t.read_scalar().map_err(|_| TranscriptError)?),
-                    )
-                }
+                Some(t) => (
+                    Some(t.read_scalar().map_err(|_| TranscriptError)?),
+                    Some(t.read_scalar().map_err(|_| TranscriptError)?),
+                    Some(t.read_scalar().map_err(|_| TranscriptError)?),
+                    Some(t.read_scalar().map_err(|_| TranscriptError)?),
+                    Some(t.read_scalar().map_err(|_| TranscriptError)?),
+                ),
             }
         };
-        let z = self.ecc_chip.main_gate().assign_value(region, &z.into(), MainGateColumn::A, offset)?;
-        let z_w = self.ecc_chip.main_gate().assign_value(region, &z_w.into(), MainGateColumn::A, offset)?;
-        let a = self.ecc_chip.main_gate().assign_value(region, &a.into(), MainGateColumn::A, offset)?;
-        let a_prev = self.ecc_chip.main_gate().assign_value(region, &a_prev.into(), MainGateColumn::A, offset)?;
-        let s = self.ecc_chip.main_gate().assign_value(region, &s.into(), MainGateColumn::A, offset)?;
+        let z =
+            self.ecc_chip
+                .main_gate()
+                .assign_value(region, &z.into(), MainGateColumn::A, offset)?;
+        let z_w = self.ecc_chip.main_gate().assign_value(
+            region,
+            &z_w.into(),
+            MainGateColumn::A,
+            offset,
+        )?;
+        let a =
+            self.ecc_chip
+                .main_gate()
+                .assign_value(region, &a.into(), MainGateColumn::A, offset)?;
+        let a_prev = self.ecc_chip.main_gate().assign_value(
+            region,
+            &a_prev.into(),
+            MainGateColumn::A,
+            offset,
+        )?;
+        let s =
+            self.ecc_chip
+                .main_gate()
+                .assign_value(region, &s.into(), MainGateColumn::A, offset)?;
 
         Ok(EvaluatedVar {
             committed: cv,
@@ -158,49 +175,167 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> LookupChip
         //   Z(omega * x) * (A'(x) + beta) * (S'(x) + gamma)
         //   - Z(x) * (theta^{m-1} a_0(x) + ... + a_{m-1}(x) + beta)
         //      * (theta^{m-1} s_0(x) + ... + s_{m-1}(x) + gamma)) = 0
+        fn compute_expr<C: CurveAffine>(
+            main_gate: &MainGate<C::ScalarExt>,
+            region: &mut Region<'_, C::ScalarExt>,
+            offset: &mut usize,
+            expression: &Expression<C::ScalarExt>,
+            advice_evals: &[AssignedValue<C::ScalarExt>],
+            fixed_evals: &[AssignedValue<C::ScalarExt>],
+            instance_evals: &[AssignedValue<C::ScalarExt>],
+        ) -> AssignedValue<C::ScalarExt> {
+            match expression {
+                Expression::Constant(scalar) => main_gate
+                    .assign_constant(
+                        region,
+                        &(Some(scalar.clone()).into()),
+                        MainGateColumn::A,
+                        offset,
+                    )
+                    .unwrap(),
+                Expression::Selector(_) => {
+                    panic!("virtual selectors are removed during optimization")
+                }
+                Expression::Fixed { query_index, .. } => fixed_evals[*query_index].clone(),
+                Expression::Advice { query_index, .. } => advice_evals[*query_index].clone(),
+                Expression::Instance { query_index, .. } => instance_evals[*query_index].clone(),
+                Expression::Negated(a) => {
+                    let a = compute_expr::<C>(
+                        main_gate,
+                        region,
+                        offset,
+                        a,
+                        advice_evals,
+                        fixed_evals,
+                        instance_evals,
+                    );
+                    main_gate.neg(region, a, offset).unwrap()
+                }
+                Expression::Sum(a, b) => {
+                    let a = compute_expr::<C>(
+                        main_gate,
+                        region,
+                        offset,
+                        a,
+                        advice_evals,
+                        fixed_evals,
+                        instance_evals,
+                    );
+                    let b = compute_expr::<C>(
+                        main_gate,
+                        region,
+                        offset,
+                        b,
+                        advice_evals,
+                        fixed_evals,
+                        instance_evals,
+                    );
+                    main_gate.add(region, a, b, offset).unwrap()
+                }
+                Expression::Product(a, b) => {
+                    let a = compute_expr::<C>(
+                        main_gate,
+                        region,
+                        offset,
+                        a,
+                        advice_evals,
+                        fixed_evals,
+                        instance_evals,
+                    );
+                    let b = compute_expr::<C>(
+                        main_gate,
+                        region,
+                        offset,
+                        b,
+                        advice_evals,
+                        fixed_evals,
+                        instance_evals,
+                    );
+                    main_gate.mul(region, a, b, offset).unwrap()
+                }
+                Expression::Scaled(a, scalar) => {
+                    let a = compute_expr::<C>(
+                        main_gate,
+                        region,
+                        offset,
+                        a,
+                        advice_evals,
+                        fixed_evals,
+                        instance_evals,
+                    );
+                    main_gate
+                        .mul_by_constant(region, a, *scalar, offset)
+                        .unwrap()
+                }
+            }
+        }
+        fn compress_expressions<C: CurveAffine>(
+            exprs: &[Expression<C::ScalarExt>],
+            main_gate: &MainGate<C::ScalarExt>,
+            region: &mut Region<C::ScalarExt>,
+            offset: &mut usize,
+            advice_evals: &[AssignedValue<C::ScalarExt>],
+            fixed_evals: &[AssignedValue<C::ScalarExt>],
+            instance_evals: &[AssignedValue<C::ScalarExt>],
+            theta: AssignedValue<C::ScalarExt>,
+        ) -> AssignedValue<C::ScalarExt> {
+            let zero = Some(C::ScalarExt::zero()).into();
+            let zero = main_gate
+                .assign_constant(region, &zero, MainGateColumn::A, offset)
+                .unwrap();
+            let mut ret = zero;
+            for expr in exprs {
+                let eval = compute_expr::<C>(
+                    main_gate,
+                    region,
+                    offset,
+                    expr,
+                    advice_evals,
+                    fixed_evals,
+                    instance_evals,
+                );
+                let term1 = main_gate.mul(region, &ret, &theta, offset).unwrap();
+                ret = main_gate.add(region, term1, eval, offset).unwrap();
+            }
+            ret
+        }
+
         let expr3 = {
-            let compress_expressions = |expressions: &[Expression<C::ScalarExt>]| {
-                expressions
-                    .iter()
-                    .map(|expression| {
-                        expression.evaluate_mut(
-                            &mut |scalar| {
-                                // this should never fail
-                                main_gate.assign_constant(region, &Some(scalar).into(), MainGateColumn::A, offset).unwrap()
-                            },
-                            &mut |_| panic!("virtual selectors are removed during optimization"),
-                            &mut |index, _, _| fixed_evals[index].clone(),
-                            &mut |index, _, _| advice_evals[index].clone(),
-                            &mut |index, _, _| instance_evals[index].clone(),
-                            &mut |a| main_gate.neg(region, a, offset).unwrap(),
-                            &mut |a, b| main_gate.add(region, a, b, offset).unwrap(),
-                            &mut |a, b| main_gate.mul(region, a, b, offset).unwrap(),
-                            &mut |a, scalar| main_gate.mul_by_constant(region, a, scalar, offset).unwrap(),
-                        )
-                    })
-                    .fold(None, |acc, eval| {
-                        match acc {
-                            Some(acc) => {
-                                let term1 = main_gate.mul(region, &acc, &theta.value(), offset).unwrap();
-                                Some(main_gate.add(region, term1, &eval, offset).unwrap())
-                            }
-                            None => Some(eval)
-                        }
-                    }).unwrap()
-            };
             let left = {
                 // a' + beta
-                let factor1 = main_gate.add(region, &ev.permuted_input_eval, &beta.value(), offset)?;
+                let factor1 =
+                    main_gate.add(region, &ev.permuted_input_eval, &beta.value(), offset)?;
                 // s' + gamma
-                let factor2 = main_gate.add(region, &ev.permuted_table_eval, &gamma.value(), offset)?;
+                let factor2 =
+                    main_gate.add(region, &ev.permuted_table_eval, &gamma.value(), offset)?;
                 // z_w * (a' + beta) * (s' + gamma)
                 let term1 = main_gate.mul(region, &factor1, &factor2, offset)?;
                 main_gate.mul(region, &term1, &ev.product_next_eval, offset)?
             };
 
             let right = {
-                let factor1 = main_gate.add(region, &compress_expressions(&input_expressions), &beta.value(), offset)?;
-                let factor2 = main_gate.add(region, &compress_expressions(&table_expressions), &gamma.value(), offset)?;
+                let input_expr = compress_expressions::<C>(
+                    &input_expressions,
+                    &main_gate,
+                    region,
+                    offset,
+                    advice_evals,
+                    fixed_evals,
+                    instance_evals,
+                    theta.value(),
+                );
+                let table_expr = compress_expressions::<C>(
+                    &table_expressions,
+                    &main_gate,
+                    region,
+                    offset,
+                    advice_evals,
+                    fixed_evals,
+                    instance_evals,
+                    theta.value(),
+                );
+                let factor1 = main_gate.add(region, &input_expr, &beta.value(), offset)?;
+                let factor2 = main_gate.add(region, &table_expr, &gamma.value(), offset)?;
                 let term1 = main_gate.mul(region, &factor1, &factor2, offset)?;
                 main_gate.mul(region, &term1, &ev.product_eval, offset)?
             };
@@ -210,12 +345,22 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> LookupChip
         };
 
         // 4. l_0(x) * (A'(x) - S'(x)) = 0
-        let a_prime_sub_s_prime = main_gate.sub(region, &ev.permuted_input_eval, &ev.permuted_table_eval, offset)?;
+        let a_prime_sub_s_prime = main_gate.sub(
+            region,
+            &ev.permuted_input_eval,
+            &ev.permuted_table_eval,
+            offset,
+        )?;
         let expr4 = main_gate.mul(region, &l_0, &a_prime_sub_s_prime, offset)?;
 
         // 5. (1 - (l_last(x) + l_blind(x))) * (A'(x) - S'(x)) * (A'(x) - A'(omega^{-1} x)) = 0
         let expr5 = {
-            let a_sub_a_prev = main_gate.sub(region, &ev.permuted_input_eval, &ev.permuted_input_inv_eval, offset)?;
+            let a_sub_a_prev = main_gate.sub(
+                region,
+                &ev.permuted_input_eval,
+                &ev.permuted_input_inv_eval,
+                offset,
+            )?;
             let term1 = main_gate.mul(region, &a_prime_sub_s_prime, &a_sub_a_prev, offset)?;
             main_gate.mul(region, &one_sub_last_sum_blind, &term1, offset)?
         };
@@ -225,13 +370,6 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> LookupChip
 }
 
 impl<C: CurveAffine> EvaluatedVar<C> {
-    pub fn expressions(
-        &self,
-    ) -> Result<Vec<AssignedValue<C::ScalarExt>>, Error> {
-        unimplemented!()
-
-    }
-
     pub fn queries(&self) -> impl Iterator<Item = VerifierQuery<C>> + Clone {
         iter::empty()
             // Z_lookup(x)
