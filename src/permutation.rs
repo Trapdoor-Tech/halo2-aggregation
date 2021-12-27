@@ -101,10 +101,7 @@ impl<C: CurveAffine> EvaluatedVar<C> {
         // )
     }
 
-    pub fn queries(
-        & self,
-        blinding_factors: isize,
-    ) -> Vec<VerifierQuery<C>> {
+    pub fn queries(&self, blinding_factors: isize) -> Vec<VerifierQuery<C>> {
         let last_rot = Rotation((-blinding_factors + 1) as i32);
 
         iter::empty()

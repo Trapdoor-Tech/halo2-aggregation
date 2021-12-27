@@ -11,7 +11,11 @@ pub struct VerifierQuery<C: CurveAffine> {
 }
 
 impl<C: CurveAffine> VerifierQuery<C> {
-    pub fn new(commitment: AssignedPoint<C::ScalarExt>, rotation: Rotation, eval: AssignedValue<C::ScalarExt>) -> Self {
+    pub fn new(
+        commitment: AssignedPoint<C::ScalarExt>,
+        rotation: Rotation,
+        eval: AssignedValue<C::ScalarExt>,
+    ) -> Self {
         VerifierQuery {
             commitment,
             rotation,

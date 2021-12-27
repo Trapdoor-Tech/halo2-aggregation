@@ -27,7 +27,7 @@ pub struct PartiallyEvaluatedVar<C: CurveAffine> {
 pub struct EvaluatedVar<C: CurveAffine> {
     h_commitment: AssignedPoint<C::ScalarExt>,           // h(X)
     random_poly_commitment: AssignedPoint<C::ScalarExt>, // r(X)
-    random_eval: AssignedValue<C::ScalarExt>, // r(x)
+    random_eval: AssignedValue<C::ScalarExt>,            // r(x)
     // quotient poly eval h(x)
     // we have h(x) = \sum_i hi(x)*x^{i*n} = (\sum_k expr_k * y^k) / (x^n - 1)
     h_eval: AssignedValue<C::ScalarExt>,
