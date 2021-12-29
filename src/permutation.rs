@@ -1,16 +1,17 @@
 use crate::multiopen::VerifierQuery;
 use crate::{ChallengeBeta, ChallengeGamma, ChallengeX};
-use halo2::arithmetic::{CurveAffine, FieldExt};
+use halo2::arithmetic::{CurveAffine, Field, FieldExt};
 use halo2::circuit::Region;
 use halo2::plonk::Error::TranscriptError;
-use halo2::plonk::{ConstraintSystem, Error, VerifyingKey};
+use halo2::plonk::{Any, Column, ConstraintSystem, Error, VerifyingKey};
 use halo2::poly::Rotation;
 use halo2::transcript::{EncodedChallenge, Transcript, TranscriptRead};
 use halo2wrong::circuit::ecc::base_field_ecc::{BaseFieldEccChip, BaseFieldEccInstruction};
 use halo2wrong::circuit::ecc::AssignedPoint;
 use halo2wrong::circuit::main_gate::{MainGateColumn, MainGateInstructions};
-use halo2wrong::circuit::AssignedValue;
+use halo2wrong::circuit::{Assigned, AssignedValue};
 use std::marker::PhantomData;
+use std::ops::MulAssign;
 use std::{io, iter};
 
 pub struct CommittedVar<C: CurveAffine> {
@@ -158,6 +159,8 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Permutatio
         &mut self,
         mut region: &mut Region<'_, C::ScalarExt>,
         common: &CommonEvaluatedVar<C>,
+        ev: &EvaluatedVar<C>,
+        columns: &Vec<(Column<Any>, usize)>,
         advice_evals: &[AssignedValue<C::ScalarExt>],
         fixed_evals: &[AssignedValue<C::ScalarExt>],
         instance_evals: &[AssignedValue<C::ScalarExt>],
@@ -167,20 +170,125 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Permutatio
         beta: ChallengeBeta<C>,
         gamma: ChallengeGamma<C>,
         x: ChallengeX<C>,
+        chunk_len: usize,
         offset: &mut usize,
     ) -> Result<Vec<AssignedValue<C::ScalarExt>>, Error> {
-        unimplemented!()
+        assert_eq!(common.permutation_evals.len(), columns.len());
 
+        let mut exprs = vec![];
         // 1. l_0(x) * (1 - ZP_0(x)) = 0
+        let main_gate = self.ecc_chip.main_gate();
+        let one = Some(C::ScalarExt::one());
+        let one = main_gate.assign_constant(region, &one.into(), MainGateColumn::A, offset)?;
+
+        let expr1 = {
+            let one_sub_zp0 =
+                main_gate.sub(region, &one, &ev.sets[0].permutation_product_eval, offset)?;
+            main_gate.mul(region, &l_0, &one_sub_zp0, offset)?
+        };
+        exprs.push(expr1);
 
         // 2. l_last(X) * (ZP_l(x)^2 - ZP_l(x)) = 0
+        let expr2 = {
+            assert!(ev.sets.len() >= 1);
+            let zp_last = ev
+                .sets
+                .last()
+                .map(|zp| zp.permutation_product_eval.clone())
+                .unwrap();
+            let zp_last_sqr = main_gate.mul(region, &zp_last, &zp_last, offset)?;
+            let term = main_gate.sub(region, &zp_last_sqr, &zp_last, offset)?;
+            main_gate.mul(region, &l_last, &term, offset)?
+        };
+        exprs.push(expr2);
 
         // 3. l_0(X) * (ZP_i(x) - ZP_{i-1}(omega^(last)*x)) = 0
+        for i in (0..ev.sets.len() - 1).into_iter() {
+            let term = main_gate.sub(
+                region,
+                &ev.sets[i].permutation_product_eval,
+                &ev.sets[i + 1]
+                    .permutation_product_last_eval
+                    .clone()
+                    .unwrap(),
+                offset,
+            )?;
+            let expr3 = main_gate.mul(region, &l_0, &term, offset)?;
+            exprs.push(expr3);
+        }
 
         // 4. (1 - (l_last(x) + l_blind(x))) * (
         //       ZP_i(omega*x) \prod_k (p(x) + beta*sigma_k(x) + gamma)
-        //     - ZP_i(x) \prod_k (p(x) + beta * delta^k * x + gamma)
+        //     - ZP_i(x) \prod_k (p(x) + beta * delta^k * x + gamma))
         // )
+        let perm_polys_len = common.permutation_evals.len();
+        // delta^i
+        let one = C::ScalarExt::one();
+        let delta = C::ScalarExt::DELTA;
+        let mut deltas = vec![];
+
+        let mut acc = one;
+        for i in (0..perm_polys_len).into_iter() {
+            acc.mul_assign(delta);
+            deltas.push(acc);
+        }
+
+        for (chunk_idx, ((set, columns), perm_evals)) in ev
+            .sets
+            .iter()
+            .zip(columns.chunks(chunk_len))
+            .zip(common.permutation_evals.chunks(chunk_len))
+            .enumerate()
+        {
+            // left = ZP_i(omega*x) \prod_k (p(x) + beta*sigma_k(x) + gamma)
+            let mut left = set.permutation_product_next_eval.clone();
+            for (eval, perm_eval) in columns
+                .iter()
+                .map(|(column, idx)| match column.column_type() {
+                    Any::Advice => advice_evals[*idx].clone(),
+                    Any::Fixed => fixed_evals[*idx].clone(),
+                    Any::Instance => instance_evals[*idx].clone(),
+                })
+                .zip(perm_evals.iter())
+            {
+                let term1 = main_gate.mul(region, &beta.value(), perm_eval, offset)?;
+                let term2 = main_gate.add(region, &term1, &eval, offset)?;
+                let term3 = main_gate.add(region, &term2, &gamma.value(), offset)?;
+
+                left = main_gate.mul(region, &left, &term3, offset)?;
+            }
+            // right = ZP_i(x) \prod_k (p(x) + beta * delta^(chunk_len*i+k) * x + gamma))
+            let mut right = set.permutation_product_eval.clone();
+            for (i, eval) in columns
+                .iter()
+                .map(|(column, idx)| match column.column_type() {
+                    Any::Advice => advice_evals[*idx].clone(),
+                    Any::Fixed => fixed_evals[*idx].clone(),
+                    Any::Instance => instance_evals[*idx].clone(),
+                })
+                .enumerate()
+            {
+                let idx = chunk_len * chunk_idx + i;
+                let term = main_gate.mul_by_constant(region, &beta.value(), deltas[idx], offset)?;
+                let term = main_gate.mul(region, &term, &x.value(), offset)?;
+                let term = main_gate.add(region, &term, &eval, offset)?;
+                let term = main_gate.add(region, &term, &gamma.value(), offset)?;
+
+                right = main_gate.mul(region, &right, &term, offset)?;
+            }
+
+            // expr = (1 - (l_last(x) + l_blind(x))) * (left - right)
+            let l_last_sum_blind = main_gate.add(region, &l_last, &l_blind, offset)?;
+            let one =
+                main_gate.assign_constant(region, &Some(one).into(), MainGateColumn::A, offset)?;
+            let one_sub_last_sum_blind = main_gate.sub(region, &one, &l_last_sum_blind, offset)?;
+            let expr = main_gate.sub(region, &left, &right, offset)?;
+            let expr = main_gate.mul(region, &expr, &one_sub_last_sum_blind, offset)?;
+
+            exprs.push(expr);
+        }
+
+        Ok(exprs)
     }
 }
 
