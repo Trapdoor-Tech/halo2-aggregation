@@ -34,25 +34,28 @@ pub struct CommonEvaluatedVar<C: CurveAffine> {
     permutation_evals: Vec<AssignedValue<C::ScalarExt>>, // { sigma_i(z) }
 }
 
-pub struct PermutationChip<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> {
+pub struct PermutationChip<C: CurveAffine> {
     ecc_chip: BaseFieldEccChip<C>,
-    transcript: Option<&'a mut T>,
-    _marker: PhantomData<E>,
 }
 
-impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> PermutationChip<'_, C, E, T> {
-    pub fn alloc_cv(
+impl<C: CurveAffine> PermutationChip<C> {
+    pub fn alloc_cv<E, T>(
         &mut self,
+        mut transcript: Option<&mut T>,
         region: &mut Region<'_, C::ScalarExt>,
         num_columns: usize,
         chunk_len: usize, // vk.cs.degree() - 2
         offset: &mut usize,
-    ) -> Result<CommittedVar<C>, Error> {
+    ) -> Result<CommittedVar<C>, Error>
+    where
+        E: EncodedChallenge<C>,
+        T: TranscriptRead<C, E>,
+    {
         let num_chunks = (num_columns + chunk_len - 1) / chunk_len;
         let comms = (0..num_chunks)
             .into_iter()
             .map(|_| -> Result<AssignedPoint<C::ScalarExt>, Error> {
-                let point = match self.transcript.as_mut() {
+                let point = match transcript.as_mut() {
                     None => None,
                     Some(t) => Some(t.read_point().map_err(|_| TranscriptError)?),
                 };
@@ -65,17 +68,22 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Permutatio
         })
     }
 
-    pub fn alloc_ev(
+    pub fn alloc_ev<E, T>(
         &mut self,
+        mut transcript: Option<&mut T>,
         region: &mut Region<C::ScalarExt>,
         offset: &mut usize,
         cv: CommittedVar<C>,
-    ) -> Result<EvaluatedVar<C>, Error> {
+    ) -> Result<EvaluatedVar<C>, Error>
+    where
+        E: EncodedChallenge<C>,
+        T: TranscriptRead<C, E>,
+    {
         let mut sets = vec![];
 
         let mut iter = cv.permutation_product_commitments.into_iter();
         while let Some(zp_commitment) = iter.next() {
-            let (zp, zp_next) = match self.transcript.as_mut() {
+            let (zp, zp_next) = match transcript.as_mut() {
                 None => (None, None),
                 Some(t) => (
                     Some(t.read_scalar().map_err(|_| TranscriptError)?),
@@ -83,7 +91,7 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Permutatio
                 ),
             };
             let zp_last_eval = if iter.len() > 0 {
-                let scalar = match self.transcript.as_mut() {
+                let scalar = match transcript.as_mut() {
                     None => None,
                     Some(t) => Some(t.read_scalar().map_err(|_| TranscriptError)?),
                 };
@@ -119,16 +127,21 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Permutatio
         Ok(EvaluatedVar { sets })
     }
 
-    pub fn alloc_cev(
+    pub fn alloc_cev<E, T>(
         &mut self,
+        mut transcript: Option<&mut T>,
         region: &mut Region<C::ScalarExt>,
         offset: &mut usize,
         num_columns: usize,
-    ) -> Result<CommonEvaluatedVar<C>, Error> {
+    ) -> Result<CommonEvaluatedVar<C>, Error>
+    where
+        E: EncodedChallenge<C>,
+        T: TranscriptRead<C, E>,
+    {
         let sigma_evals = (0..num_columns)
             .into_iter()
             .map(|_| -> Result<AssignedValue<C::ScalarExt>, Error> {
-                let scalar = match self.transcript.as_mut() {
+                let scalar = match transcript.as_mut() {
                     None => None,
                     Some(t) => Some(t.read_scalar().map_err(|_| TranscriptError)?),
                 };
