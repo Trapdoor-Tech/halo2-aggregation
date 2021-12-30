@@ -8,6 +8,10 @@ use halo2::transcript::{EncodedChallenge, TranscriptRead};
 use halo2wrong::circuit::ecc::AssignedPoint;
 use halo2wrong::circuit::AssignedValue;
 use std::iter;
+use std::marker::PhantomData;
+use halo2::plonk::Error::TranscriptError;
+use halo2wrong::circuit::ecc::base_field_ecc::{BaseFieldEccChip, BaseFieldEccInstruction};
+use halo2wrong::circuit::main_gate::{MainGateColumn, MainGateInstructions};
 
 pub struct CommittedVar<C: CurveAffine> {
     random_poly_commitment: AssignedPoint<C::ScalarExt>,
@@ -25,7 +29,7 @@ pub struct PartiallyEvaluatedVar<C: CurveAffine> {
 }
 
 pub struct EvaluatedVar<C: CurveAffine> {
-    h_commitment: AssignedPoint<C::ScalarExt>,           // h(X)
+    h_commitment: AssignedPoint<C::ScalarExt>,           // h(X) = \sum hi(X)*X^{i*n}
     random_poly_commitment: AssignedPoint<C::ScalarExt>, // r(X)
     random_eval: AssignedValue<C::ScalarExt>,            // r(x)
     // quotient poly eval h(x)
@@ -33,33 +37,71 @@ pub struct EvaluatedVar<C: CurveAffine> {
     h_eval: AssignedValue<C::ScalarExt>,
 }
 
-impl<C: CurveAffine> CommittedVar<C> {
-    pub fn alloc_before_y<E: EncodedChallenge<C>, T: TranscriptRead<C, E>>(
-        region: &mut Region<'_, C::ScalarExt>,
-        transcript: &mut T,
-        offset: &mut usize,
-    ) -> Result<Self, Error> {
-        unimplemented!()
-    }
+pub struct VanishingChip<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> {
+    ecc_chip: BaseFieldEccChip<C>,
+    transcript: Option<&'a mut T>,
+    _marker: PhantomData<E>,
 }
 
-impl<C: CurveAffine> ConstructedVar<C> {
-    pub fn alloc_after_y<E: EncodedChallenge<C>, T: TranscriptRead<C, E>>(
+impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> VanishingChip<'_, C, E, T> {
+    pub fn alloc_before_y(
+        &mut self,
         region: &mut Region<'_, C::ScalarExt>,
-        committed: CommittedVar<C>,
-        transcript: &mut T,
         offset: &mut usize,
-    ) -> Result<ConstructedVar<C>, Error> {
-        unimplemented!()
+    ) -> Result<CommittedVar<C>, Error> {
+        let r = match self.transcript.as_mut() {
+            None => None,
+            Some(t) => Some(t.read_point().map_err(|_| TranscriptError)?),
+        };
+
+        let r = self.ecc_chip.assign_point(region, r, offset)?;
+        Ok(CommittedVar {
+            random_poly_commitment: r,
+        })
     }
 
-    pub fn evaluate_after_x<E: EncodedChallenge<C>, T: TranscriptRead<C, E>>(
-        &self,
+    pub fn alloc_after_y(
+        &mut self,
+        cv: CommittedVar<C>,
+        n: usize, // equals to vk.domain.get_quotient_poly_degree()
         region: &mut Region<'_, C::ScalarExt>,
-        transcript: &mut T,
+        offset: &mut usize,
+    ) -> Result<ConstructedVar<C>, Error> {
+        let mut h_commitments = vec![];
+        for i in (0..n).into_iter() {
+            let h = match self.transcript.as_mut() {
+                None => None,
+                Some(t) => Some(t.read_point().map_err(|_| TranscriptError)?),
+            };
+
+            h_commitments.push(self.ecc_chip.assign_point(region, h, offset)?);
+        }
+
+        Ok(ConstructedVar {
+            h_commitments,
+            random_poly_commitment: cv.random_poly_commitment,
+        })
+    }
+
+    pub fn alloc_after_x(
+        &mut self,
+        cv: ConstructedVar<C>,
+        region: &mut Region<'_, C::ScalarExt>,
         offset: &mut usize,
     ) -> Result<PartiallyEvaluatedVar<C>, Error> {
-        unimplemented!()
+        let r_eval = match self.transcript.as_mut() {
+            None => None,
+            Some(t) => Some(t.read_scalar().map_err(|_| TranscriptError)?),
+        };
+
+        let main_gate = self.ecc_chip.main_gate();
+        let r_eval = main_gate.assign_value(region, &r_eval.into(), MainGateColumn::A, offset)?;
+
+        Ok(PartiallyEvaluatedVar{
+            h_commitments: cv.h_commitments,
+            random_poly_commitment: cv.random_poly_commitment,
+            random_eval: r_eval,
+        })
     }
 }
 
