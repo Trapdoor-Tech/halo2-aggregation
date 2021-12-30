@@ -37,6 +37,11 @@ pub struct LookupChip<C: CurveAffine> {
 }
 
 impl<C: CurveAffine> LookupChip<C> {
+    pub fn new(ecc_chip: BaseFieldEccChip<C>) -> Self {
+        Self {
+            ecc_chip,
+        }
+    }
     pub fn alloc_pcv<E: EncodedChallenge<C>, T: TranscriptRead<C, E>>(
         &mut self,
         mut transcript: Option<&mut T>,

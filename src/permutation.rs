@@ -39,6 +39,11 @@ pub struct PermutationChip<C: CurveAffine> {
 }
 
 impl<C: CurveAffine> PermutationChip<C> {
+    pub fn new(ecc_chip: BaseFieldEccChip<C>) -> Self {
+        Self {
+            ecc_chip,
+        }
+    }
     pub fn alloc_cv<E, T>(
         &mut self,
         mut transcript: Option<&mut T>,

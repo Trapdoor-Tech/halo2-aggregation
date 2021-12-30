@@ -42,6 +42,11 @@ pub struct VanishingChip<C: CurveAffine> {
 }
 
 impl<C: CurveAffine> VanishingChip<C> {
+    pub fn new(ecc_chip: BaseFieldEccChip<C>) -> Self {
+        Self {
+            ecc_chip,
+        }
+    }
     pub fn alloc_before_y<E, T>(
         &mut self,
         mut transcript: Option<&mut T>,
