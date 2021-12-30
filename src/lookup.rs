@@ -32,20 +32,23 @@ pub struct EvaluatedVar<C: CurveAffine> {
     permuted_table_eval: AssignedValue<C::ScalarExt>, // S'(z)
 }
 
-pub struct LookupChip<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> {
+pub struct LookupChip<C: CurveAffine> {
     ecc_chip: BaseFieldEccChip<C>,
-    transcript: Option<&'a mut T>,
-    _marker: PhantomData<E>,
 }
 
-impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> LookupChip<'_, C, E, T> {
-    pub fn alloc_pcv(
+impl<C: CurveAffine> LookupChip<C> {
+    pub fn alloc_pcv<E: EncodedChallenge<C>, T: TranscriptRead<C, E>>(
         &mut self,
+        mut transcript: Option<&mut T>,
         region: &mut Region<'_, C::ScalarExt>,
         offset: &mut usize,
-    ) -> Result<PermutationCommitmentsVar<C>, Error> {
+    ) -> Result<PermutationCommitmentsVar<C>, Error>
+    where
+        E: EncodedChallenge<C>,
+        T: TranscriptRead<C, E>,
+    {
         let (a_prime, s_prime) = {
-            match self.transcript.as_mut() {
+            match transcript.as_mut() {
                 None => (None, None),
                 Some(t) => (
                     Some(t.read_point().map_err(|_| TranscriptError)?),
@@ -62,14 +65,19 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> LookupChip
         })
     }
 
-    pub fn alloc_cv(
+    pub fn alloc_cv<E, T>(
         &mut self,
+        mut transcript: Option<&mut T>,
         region: &mut Region<'_, C::ScalarExt>,
         perm_comms: PermutationCommitmentsVar<C>,
         offset: &mut usize,
-    ) -> Result<CommittedVar<C>, Error> {
+    ) -> Result<CommittedVar<C>, Error>
+    where
+        E: EncodedChallenge<C>,
+        T: TranscriptRead<C, E>,
+    {
         let z_lookup = {
-            match self.transcript.as_mut() {
+            match transcript.as_mut() {
                 None => None,
                 Some(t) => (Some(t.read_point().map_err(|_| TranscriptError)?)),
             }
@@ -82,14 +90,19 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> LookupChip
         })
     }
 
-    pub fn alloc_eval(
+    pub fn alloc_eval<E, T>(
         &mut self,
+        mut transcript: Option<&mut T>,
         region: &mut Region<'_, C::ScalarExt>,
         cv: CommittedVar<C>,
         offset: &mut usize,
-    ) -> Result<EvaluatedVar<C>, Error> {
+    ) -> Result<EvaluatedVar<C>, Error>
+    where
+        E: EncodedChallenge<C>,
+        T: TranscriptRead<C, E>,
+    {
         let (z, z_w, a, a_prev, s) = {
-            match self.transcript.as_mut() {
+            match transcript.as_mut() {
                 None => (None, None, None, None, None),
                 Some(t) => (
                     Some(t.read_scalar().map_err(|_| TranscriptError)?),
