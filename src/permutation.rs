@@ -13,6 +13,7 @@ use halo2wrong::circuit::{Assigned, AssignedValue};
 use std::marker::PhantomData;
 use std::ops::MulAssign;
 use std::{io, iter};
+use crate::transcript::{TranscriptChip, TranscriptInstruction};
 
 pub struct CommittedVar<C: CurveAffine> {
     // commitment of grand product polynomials of permutation argument
@@ -46,7 +47,8 @@ impl<C: CurveAffine> PermutationChip<C> {
     }
     pub fn alloc_cv<E, T>(
         &mut self,
-        mut transcript: Option<&mut T>,
+        transcript: &mut Option<&mut T>,
+        transcript_chip: &mut TranscriptChip<C>,
         region: &mut Region<'_, C::ScalarExt>,
         num_columns: usize,
         chunk_len: usize, // vk.cs.degree() - 2
@@ -68,6 +70,9 @@ impl<C: CurveAffine> PermutationChip<C> {
             })
             .collect::<Result<Vec<AssignedPoint<C::ScalarExt>>, Error>>()?;
 
+        for comm in comms.iter() {
+            transcript_chip.common_point(region, comm.clone(), offset);
+        }
         Ok(CommittedVar {
             permutation_product_commitments: comms,
         })

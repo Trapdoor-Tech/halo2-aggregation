@@ -5,6 +5,9 @@ mod multiopen;
 mod permutation;
 mod transcript;
 mod vanishing;
+mod verifier;
+
+pub use verifier::VerifierChip;
 
 #[derive(Clone, Copy, Debug)]
 struct Theta;

@@ -12,6 +12,7 @@ use halo2wrong::circuit::main_gate::{MainGate, MainGateColumn, MainGateInstructi
 use halo2wrong::circuit::{AssignedValue, UnassignedValue};
 use std::iter;
 use std::marker::PhantomData;
+use crate::transcript::{TranscriptChip, TranscriptInstruction};
 
 pub struct PermutationCommitmentsVar<C: CurveAffine> {
     permuted_input_commitment: AssignedPoint<C::ScalarExt>, // A'
@@ -44,7 +45,8 @@ impl<C: CurveAffine> LookupChip<C> {
     }
     pub fn alloc_pcv<E: EncodedChallenge<C>, T: TranscriptRead<C, E>>(
         &mut self,
-        mut transcript: Option<&mut T>,
+        transcript: &mut Option<&mut T>,
+        transcript_chip: &mut TranscriptChip<C>,
         region: &mut Region<'_, C::ScalarExt>,
         offset: &mut usize,
     ) -> Result<PermutationCommitmentsVar<C>, Error>
@@ -64,6 +66,9 @@ impl<C: CurveAffine> LookupChip<C> {
         let a_prime = self.ecc_chip.assign_point(region, a_prime, offset)?;
         let s_prime = self.ecc_chip.assign_point(region, s_prime, offset)?;
 
+        transcript_chip.common_point(region, a_prime.clone(), offset);
+        transcript_chip.common_point(region, s_prime.clone(), offset);
+
         Ok(PermutationCommitmentsVar {
             permuted_input_commitment: a_prime,
             permuted_table_commitment: s_prime,
@@ -72,7 +77,7 @@ impl<C: CurveAffine> LookupChip<C> {
 
     pub fn alloc_cv<E, T>(
         &mut self,
-        mut transcript: Option<&mut T>,
+        transcript: &mut Option<&mut T>,
         region: &mut Region<'_, C::ScalarExt>,
         perm_comms: PermutationCommitmentsVar<C>,
         offset: &mut usize,

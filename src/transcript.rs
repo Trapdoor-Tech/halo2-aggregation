@@ -16,7 +16,7 @@ impl<C: CurveAffine, T> ChallengeScalarVar<C, T> {
     }
 }
 
-pub trait TranscriptChip<C: CurveAffine> {
+pub trait TranscriptInstruction<C: CurveAffine> {
     fn squeeze_challenge_scalar<T>(
         &mut self,
         region: &mut Region<'_, C::ScalarExt>,
@@ -36,4 +36,30 @@ pub trait TranscriptChip<C: CurveAffine> {
         scalar: AssignedValue<C::ScalarExt>,
         offset: &mut usize,
     );
+}
+
+pub struct TranscriptChip<C: CurveAffine> {
+    _marker: PhantomData<C>,
+}
+
+impl<C: CurveAffine> TranscriptChip<C> {
+    pub fn new() -> Self {
+        Self {
+            _marker: Default::default(),
+        }
+    }
+}
+
+impl<C: CurveAffine> TranscriptInstruction<C> for TranscriptChip<C> {
+    fn squeeze_challenge_scalar<T>(&mut self, region: &mut Region<'_, C::ScalarExt>, offset: &mut usize) -> ChallengeScalarVar<C, T> {
+        todo!()
+    }
+
+    fn common_point(&mut self, region: &mut Region<'_, C::ScalarExt>, point: AssignedPoint<C::ScalarExt>, offset: &mut usize) {
+        todo!()
+    }
+
+    fn common_scalar(&mut self, region: &mut Region<'_, C::ScalarExt>, scalar: AssignedValue<C::ScalarExt>, offset: &mut usize) {
+        todo!()
+    }
 }
