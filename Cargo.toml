@@ -7,5 +7,5 @@ edition = "2021"
 
 [dependencies]
 #halo2wrong = {git = "https://github.com/kilic/halo2wrong" }
-halo2wrong = { path = "../halo2wrong" }
-halo2 = { path = "../halo2" }
+halo2wrong = { path = "../halo2wrong-trapdoor" }
+halo2 = { path = "../halo2-trapdoor" }
