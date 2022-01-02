@@ -24,6 +24,7 @@ impl<C: CurveAffine> VerifierQuery<C> {
     }
 }
 
+/// MultiopenConfig contains all the columns needed, along with two chips which provide ecc/scalar arithmetic
 pub struct MultiopenConfig {
     witness: Column<Advice>,
     witness_aux: Column<Advice>,
@@ -39,6 +40,9 @@ pub struct MultiopenConfig {
     evals: Column<Instance>,
     z: Column<Instance>,
     wi: Column<Instance>,
+
+    // chip to do mul/add arithmetics on commitments
+    ecc_chip: EccConfig,
 }
 
 /// This Multiopen chip use the following column layout
@@ -66,37 +70,57 @@ pub struct MultiopenConfig {
 /// TODO: comms, evals, z, wi are instance columns ??? (or read from transcript?)
 /// TODO: did not constrain u/v from transcript
 pub struct MultiopenChip<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> {
-    integer_chip: IntegerChip<C::Base, C::ScalarExt>,
-    ecc_chip: BaseFieldEccChip<C>,
+    config: MultiopenConfig,
     transcript: Option<&'a mut T>,
+
+    ecc_chip: BaseFieldEccChip<C>,
     _marker: PhantomData<E>,
 }
 
-/// To simplify MSM computation, we calculate every commitment/eval while accumulating
-impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Circuit<C> MultiopenChip<'a, C, E> {
+impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Chip<C::ScalarExt>
+    for MultiopenChip<'a, C, E>
+{
     type Config = MultiopenConfig;
-    type FloorPlanner = SimpleFloorPlanner;
+    type Loaded = ();
 
-    fn without_witnesses(&self) -> Self {
+    fn config(&self) -> &Self::Config {
+        &self.config
+    }
+
+    fn loaded(&self) -> &Self::Loaded {
+        &()
+    }
+}
+
+/// To simplify MSM computation, we calculate every commitment/eval while accumulating
+impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> MultiopenChip<'a, C, E> {
+    fn new(config: MultiopenConfig) -> Self {
         Self {
+            config,
             transcript: None,
         }
     }
 
-    fn configure(meta: &mut ConstraintSystem<F>) -> PlonkConfig {
-        let witness = meta.advice_column();
-        let witness_aux = meta.advice_column();
-        let comm_multi = meta.advice_column();
-        let eval_multi = meta.advice_column();
-        let v_sel = meta.advice_column();
-        let u = meta.advice_column();
+    fn configure(
+        meta: &mut ConstraintSystem<F>,
+        advice: [Column<Advice>; 7],
+        fixed: [Column<Fixed>; 1],
+        instace: [Column<Instance>; 4],
+    ) -> PlonkConfig {
+        let witness = advice[0];
+        let witness_aux = advice[1];
+        let comm_multi = advice[2];
+        let eval_multi = advice[3];
+        let v_sel = advice[4];
+        let u = advice[5];
+        let v = advice[6];
 
-        let u_sel = meta.fixed_column();
+        let u_sel = fixed[0];
 
-        let comms = meta.instance_column();
-        let evals = meta.instance_column();
-        let z = meta.instance_column();
-        let wi = meta.instance_column();
+        let comms = instance[0];
+        let evals = instance[1];
+        let z = instance[2];
+        let wi = instance[3];
 
         meta.create_gate("multiopen custom gate", |meta| {
             let witness = meta.query_advice(witness, Rotation::cur());
@@ -127,11 +151,23 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Circui
 
             // 5 constraints as described previously
             vec![
-                witness_prev.clone() * u_sel.clone() * u + witness_prev.clone() * (F::one() - u_sel.clone()) + z.clone() * wi.clone() * u_sel.clone() + (witness.clone() * (-F::one())),
-                witness_aux_prev.clone() * u_sel.clone() * u + witness_aux_prev.clone() * (F::one() - u_sel.clone()) + wi.clone() * u_sel.clone() + (witness_aux.clone() * (-F::one())),
-                comm_mul_prev.clone() * u_sel.clone() * u + comm_mul_prev.clone() * (F::one() - u_sel.clone()) + comms.clone() * v_sel.clone() + (comms_mul.clone() * (-F::one())),
-                eval_mul_prev.clone() * u_sel.clone() * u + eval_mul_prev.clone() * (F::one() - u_sel.clone()) + evals.clone() * v_sel.clone() + (eval_mul.clone() * (-F::one())),
-                v_sel.clone() + v * u_sel.clone(),
+                witness_prev * u_sel * u
+                    + witness_prev * (F::one() - u_sel)
+                    + z * wi * u_sel
+                    + (witness * (-F::one())),
+                witness_aux_prev * u_sel * u
+                    + witness_aux_prev * (F::one() - u_sel)
+                    + wi * u_sel
+                    + (witness_aux * (-F::one())),
+                comm_mul_prev * u_sel * u
+                    + comm_mul_prev * (F::one() - u_sel)
+                    + comms * v_sel
+                    + (comms_mul * (-F::one())),
+                eval_mul_prev * u_sel * u
+                    + eval_mul_prev * (F::one() - u_sel)
+                    + evals * v_sel
+                    + (eval_mul * (-F::one())),
+                v_sel + v * u_sel,
             ]
         });
 
@@ -151,33 +187,13 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Circui
         }
     }
 
-    fn synthesize(&self, config: MultiopenConfig, mut layouter: impl Layouter<F>) -> Result<(), Error> {
+    fn synthesize(
+        &self,
+        config: MultiopenConfig,
+        mut layouter: impl Layouter<F>,
+    ) -> Result<(), Error> {
         let cs = MultiopenChip::new(config);
-
-        for _ in 0..(1 << (self.k - 1) - 3) {
-            let mut a_squared = None;
-            let (a0, _, c0) = cs.raw_multiply(&mut layouter, || {
-                a_squared = self.a.map(|a| a.square());
-                Ok((
-                    self.a.ok_or(Error::Synthesis)?,
-                    self.a.ok_or(Error::Synthesis)?,
-                    a_squared.ok_or(Error::Synthesis)?,
-                ))
-            })?;
-            let (a1, b1, _) = cs.raw_add(&mut layouter, || {
-                let fin = a_squared.and_then(|a2| self.a.map(|a| a + a2));
-                Ok((
-                    self.a.ok_or(Error::Synthesis)?,
-                    a_squared.ok_or(Error::Synthesis)?,
-                    fin.ok_or(Error::Synthesis)?,
-                ))
-            })?;
-            cs.copy(&mut layouter, a0, a1)?;
-            cs.copy(&mut layouter, b1, c0)?;
-        }
 
         Ok(())
     }
-
-
 }
