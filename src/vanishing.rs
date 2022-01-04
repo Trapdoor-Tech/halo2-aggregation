@@ -1,4 +1,5 @@
 use crate::multiopen::VerifierQuery;
+use crate::transcript::{TranscriptChip, TranscriptInstruction};
 use crate::ChallengeY;
 use halo2::arithmetic::CurveAffine;
 use halo2::circuit::Region;
@@ -43,13 +44,12 @@ pub struct VanishingChip<C: CurveAffine> {
 
 impl<C: CurveAffine> VanishingChip<C> {
     pub fn new(ecc_chip: BaseFieldEccChip<C>) -> Self {
-        Self {
-            ecc_chip,
-        }
+        Self { ecc_chip }
     }
     pub fn alloc_before_y<E, T>(
         &mut self,
-        mut transcript: Option<&mut T>,
+        transcript: &mut Option<&mut T>,
+        transcript_chip: &mut TranscriptChip<C>,
         region: &mut Region<'_, C::ScalarExt>,
         offset: &mut usize,
     ) -> Result<CommittedVar<C>, Error>
@@ -63,6 +63,7 @@ impl<C: CurveAffine> VanishingChip<C> {
         };
 
         let r = self.ecc_chip.assign_point(region, r, offset)?;
+        transcript_chip.common_point(region, r.clone(), offset);
         Ok(CommittedVar {
             random_poly_commitment: r,
         })
@@ -70,7 +71,8 @@ impl<C: CurveAffine> VanishingChip<C> {
 
     pub fn alloc_after_y<E, T>(
         &mut self,
-        mut transcript: Option<&mut T>,
+        transcript: &mut Option<&mut T>,
+        transcript_chip: &mut TranscriptChip<C>,
         cv: CommittedVar<C>,
         n: usize, // equals to vk.domain.get_quotient_poly_degree()
         region: &mut Region<'_, C::ScalarExt>,
@@ -87,7 +89,9 @@ impl<C: CurveAffine> VanishingChip<C> {
                 Some(t) => Some(t.read_point().map_err(|_| TranscriptError)?),
             };
 
-            h_commitments.push(self.ecc_chip.assign_point(region, h, offset)?);
+            let point = self.ecc_chip.assign_point(region, h, offset)?;
+            transcript_chip.common_point(region, point.clone(), offset);
+            h_commitments.push(point);
         }
 
         Ok(ConstructedVar {
@@ -98,7 +102,8 @@ impl<C: CurveAffine> VanishingChip<C> {
 
     pub fn alloc_after_x<E, T>(
         &mut self,
-        mut transcript: Option<&mut T>,
+        transcript: &mut Option<&mut T>,
+        transcript_chip: &mut TranscriptChip<C>,
         cv: ConstructedVar<C>,
         region: &mut Region<'_, C::ScalarExt>,
         offset: &mut usize,
@@ -114,6 +119,7 @@ impl<C: CurveAffine> VanishingChip<C> {
 
         let main_gate = self.ecc_chip.main_gate();
         let r_eval = main_gate.assign_value(region, &r_eval.into(), MainGateColumn::A, offset)?;
+        transcript_chip.common_scalar(region, r_eval.clone(), offset);
 
         Ok(PartiallyEvaluatedVar {
             h_commitments: cv.h_commitments,

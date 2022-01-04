@@ -51,15 +51,29 @@ impl<C: CurveAffine> TranscriptChip<C> {
 }
 
 impl<C: CurveAffine> TranscriptInstruction<C> for TranscriptChip<C> {
-    fn squeeze_challenge_scalar<T>(&mut self, region: &mut Region<'_, C::ScalarExt>, offset: &mut usize) -> ChallengeScalarVar<C, T> {
+    fn squeeze_challenge_scalar<T>(
+        &mut self,
+        region: &mut Region<'_, C::ScalarExt>,
+        offset: &mut usize,
+    ) -> ChallengeScalarVar<C, T> {
         todo!()
     }
 
-    fn common_point(&mut self, region: &mut Region<'_, C::ScalarExt>, point: AssignedPoint<C::ScalarExt>, offset: &mut usize) {
+    fn common_point(
+        &mut self,
+        region: &mut Region<'_, C::ScalarExt>,
+        point: AssignedPoint<C::ScalarExt>,
+        offset: &mut usize,
+    ) {
         todo!()
     }
 
-    fn common_scalar(&mut self, region: &mut Region<'_, C::ScalarExt>, scalar: AssignedValue<C::ScalarExt>, offset: &mut usize) {
+    fn common_scalar(
+        &mut self,
+        region: &mut Region<'_, C::ScalarExt>,
+        scalar: AssignedValue<C::ScalarExt>,
+        offset: &mut usize,
+    ) {
         todo!()
     }
 }

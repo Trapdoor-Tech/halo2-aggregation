@@ -1,4 +1,5 @@
 use crate::multiopen::VerifierQuery;
+use crate::transcript::{TranscriptChip, TranscriptInstruction};
 use crate::{ChallengeBeta, ChallengeGamma, ChallengeX};
 use halo2::arithmetic::{CurveAffine, Field, FieldExt};
 use halo2::circuit::Region;
@@ -13,7 +14,6 @@ use halo2wrong::circuit::{Assigned, AssignedValue};
 use std::marker::PhantomData;
 use std::ops::MulAssign;
 use std::{io, iter};
-use crate::transcript::{TranscriptChip, TranscriptInstruction};
 
 pub struct CommittedVar<C: CurveAffine> {
     // commitment of grand product polynomials of permutation argument
@@ -41,9 +41,7 @@ pub struct PermutationChip<C: CurveAffine> {
 
 impl<C: CurveAffine> PermutationChip<C> {
     pub fn new(ecc_chip: BaseFieldEccChip<C>) -> Self {
-        Self {
-            ecc_chip,
-        }
+        Self { ecc_chip }
     }
     pub fn alloc_cv<E, T>(
         &mut self,
@@ -139,7 +137,8 @@ impl<C: CurveAffine> PermutationChip<C> {
 
     pub fn alloc_cev<E, T>(
         &mut self,
-        mut transcript: Option<&mut T>,
+        transcript: &mut Option<&mut T>,
+        transcript_chip: &mut TranscriptChip<C>,
         region: &mut Region<C::ScalarExt>,
         offset: &mut usize,
         num_columns: usize,
@@ -155,12 +154,14 @@ impl<C: CurveAffine> PermutationChip<C> {
                     None => None,
                     Some(t) => Some(t.read_scalar().map_err(|_| TranscriptError)?),
                 };
-                self.ecc_chip.main_gate().assign_value(
+                let scalar = self.ecc_chip.main_gate().assign_value(
                     region,
                     &scalar.into(),
                     MainGateColumn::A,
                     offset,
-                )
+                )?;
+                transcript_chip.common_scalar(region, scalar.clone(), offset);
+                Ok(scalar)
             })
             .collect::<Result<Vec<_>, Error>>()?;
 

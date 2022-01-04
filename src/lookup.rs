@@ -1,4 +1,5 @@
 use crate::multiopen::VerifierQuery;
+use crate::transcript::{TranscriptChip, TranscriptInstruction};
 use crate::{ChallengeBeta, ChallengeGamma, ChallengeTheta};
 use halo2::arithmetic::{CurveAffine, Field, FieldExt};
 use halo2::circuit::{Chip, Region};
@@ -12,7 +13,6 @@ use halo2wrong::circuit::main_gate::{MainGate, MainGateColumn, MainGateInstructi
 use halo2wrong::circuit::{AssignedValue, UnassignedValue};
 use std::iter;
 use std::marker::PhantomData;
-use crate::transcript::{TranscriptChip, TranscriptInstruction};
 
 pub struct PermutationCommitmentsVar<C: CurveAffine> {
     permuted_input_commitment: AssignedPoint<C::ScalarExt>, // A'
@@ -39,9 +39,7 @@ pub struct LookupChip<C: CurveAffine> {
 
 impl<C: CurveAffine> LookupChip<C> {
     pub fn new(ecc_chip: BaseFieldEccChip<C>) -> Self {
-        Self {
-            ecc_chip,
-        }
+        Self { ecc_chip }
     }
     pub fn alloc_pcv<E: EncodedChallenge<C>, T: TranscriptRead<C, E>>(
         &mut self,
@@ -102,7 +100,8 @@ impl<C: CurveAffine> LookupChip<C> {
 
     pub fn alloc_eval<E, T>(
         &mut self,
-        mut transcript: Option<&mut T>,
+        transcript: &mut Option<&mut T>,
+        transcript_chip: &mut TranscriptChip<C>,
         region: &mut Region<'_, C::ScalarExt>,
         cv: CommittedVar<C>,
         offset: &mut usize,
@@ -148,6 +147,12 @@ impl<C: CurveAffine> LookupChip<C> {
                 .main_gate()
                 .assign_value(region, &s.into(), MainGateColumn::A, offset)?;
 
+        transcript_chip.common_scalar(region, z.clone(), offset);
+        transcript_chip.common_scalar(region, z_w.clone(), offset);
+        transcript_chip.common_scalar(region, a.clone(), offset);
+        transcript_chip.common_scalar(region, a_prev.clone(), offset);
+        transcript_chip.common_scalar(region, s.clone(), offset);
+
         Ok(EvaluatedVar {
             committed: cv,
             product_eval: z,
@@ -165,8 +170,8 @@ impl<C: CurveAffine> LookupChip<C> {
         l_0: AssignedValue<C::ScalarExt>,
         l_last: AssignedValue<C::ScalarExt>,
         l_blind: AssignedValue<C::ScalarExt>,
-        input_expressions: Vec<Expression<C::ScalarExt>>,
-        table_expressions: Vec<Expression<C::ScalarExt>>,
+        input_expressions: &Vec<Expression<C::ScalarExt>>,
+        table_expressions: &Vec<Expression<C::ScalarExt>>,
         theta: ChallengeTheta<C>,
         beta: ChallengeBeta<C>,
         gamma: ChallengeGamma<C>,
