@@ -11,10 +11,13 @@ use halo2::plonk::Error::TranscriptError;
 use halo2::plonk::{Any, Column, Error, Expression, PinnedVerificationKey, VerifyingKey};
 use halo2::transcript::{EncodedChallenge, TranscriptRead};
 use halo2wrong::circuit::ecc::base_field_ecc::{BaseFieldEccChip, BaseFieldEccInstruction};
-use halo2wrong::circuit::main_gate::{MainGate, MainGateColumn, MainGateInstructions};
-use halo2wrong::circuit::{AssignedCondition, AssignedValue};
+use halo2wrong::circuit::main_gate::{
+    CombinationOption, MainGate, MainGateColumn, MainGateInstructions, Term,
+};
+use halo2wrong::circuit::{Assigned, AssignedCondition, AssignedValue};
 use std::fmt::format;
 use std::marker::PhantomData;
+use std::ops::MulAssign;
 
 pub struct VerifierChip<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> {
     ecc_chip: BaseFieldEccChip<C>,
@@ -147,6 +150,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         num_lookups: usize,
         perm_num_columns: usize,
         perm_chunk_len: usize,
+        omega: C::ScalarExt,
         input_expressions: Vec<Expression<C::ScalarExt>>,
         table_expressions: Vec<Expression<C::ScalarExt>>,
         gates: Vec<Expression<C::ScalarExt>>,
@@ -336,6 +340,66 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             }
             // l_evals
             let mut l_evals: Vec<AssignedValue<C::ScalarExt>> = vec![];
+            let mut omega_powers = C::ScalarExt::one();
+            fn sub_by_constant<F: FieldExt>(
+                main_gate: &MainGate<F>,
+                region: &mut Region<F>,
+                x: impl Assigned<F>,
+                constant: F,
+                offset: &mut usize,
+            ) -> Result<AssignedValue<F>, Error> {
+                let one = F::one();
+                let neg_one = one.neg();
+
+                let x_sub_c_val = match x.value() {
+                    Some(x) => Some(x - &constant),
+                    None => None,
+                };
+
+                let (_, x_sub_c, _, _) = main_gate.combine(
+                    region,
+                    Term::Assigned(&x, one),
+                    Term::Unassigned(x_sub_c_val.clone(), neg_one.clone()),
+                    Term::Zero,
+                    Term::Zero,
+                    neg_one,
+                    offset,
+                    CombinationOption::SingleLinerAdd,
+                )?;
+
+                Ok(AssignedValue::new(x_sub_c, x_sub_c_val))
+            }
+
+            let xn_sub_one =
+                sub_by_constant(&main_gate, region, xn.clone(), C::ScalarExt::one(), offset)?;
+            for _ in 0..(2 + blinding_factors) {
+                // l_evals[i] = (x^n - 1) / (n*(x - w^i)) * w^i
+                // let omega_i = main_gate.assign_constant(
+                //     region,
+                //     &Some(omega_powers.clone()).into(),
+                //     MainGateColumn::A,
+                //     offset,
+                // )?;
+
+                // w^i*(x^n-1)
+                let numerator =
+                    main_gate.mul_by_constant(region, &xn_sub_one, omega_powers, offset)?;
+                // n*(x - w^i)
+                let denominator = {
+                    let term =
+                        sub_by_constant(&main_gate, region, &x.value(), omega_powers, offset)?;
+                    main_gate.mul_by_constant(
+                        region,
+                        &term,
+                        C::ScalarExt::from_u128(1 << log_n),
+                        offset,
+                    )?
+                };
+
+                let (li, _) = main_gate.div(region, &numerator, &denominator, offset)?;
+                l_evals.push(li);
+                omega_powers.mul_assign(omega);
+            }
             assert_eq!(l_evals.len(), 2 + blinding_factors);
             let l_last = l_evals[0].clone();
             let mut l_blind = l_evals[1].clone();
@@ -394,6 +458,14 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
                 perm_chunk_len,
                 offset,
             )?);
+            self.vanishing.verify(
+                region,
+                vanishing,
+                &expressions,
+                y.clone(),
+                xn.clone(),
+                offset,
+            )?
         };
 
         let ret =

@@ -1,18 +1,23 @@
 use crate::multiopen::VerifierQuery;
 use crate::transcript::{TranscriptChip, TranscriptInstruction};
 use crate::ChallengeY;
-use halo2::arithmetic::CurveAffine;
+use halo2::arithmetic::{CurveAffine, Field};
 use halo2::circuit::Region;
+use halo2::plonk::Assigned::Zero;
 use halo2::plonk::Error;
 use halo2::plonk::Error::TranscriptError;
 use halo2::poly::Rotation;
 use halo2::transcript::{EncodedChallenge, TranscriptRead};
 use halo2wrong::circuit::ecc::base_field_ecc::{BaseFieldEccChip, BaseFieldEccInstruction};
 use halo2wrong::circuit::ecc::AssignedPoint;
-use halo2wrong::circuit::main_gate::{MainGateColumn, MainGateInstructions};
-use halo2wrong::circuit::AssignedValue;
+use halo2wrong::circuit::main_gate::Term::Unassigned;
+use halo2wrong::circuit::main_gate::{
+    CombinationOption, MainGateColumn, MainGateInstructions, Term,
+};
+use halo2wrong::circuit::{Assigned, AssignedValue};
 use std::iter;
 use std::marker::PhantomData;
+use std::ops::Neg;
 
 pub struct CommittedVar<C: CurveAffine> {
     random_poly_commitment: AssignedPoint<C::ScalarExt>,
@@ -127,22 +132,71 @@ impl<C: CurveAffine> VanishingChip<C> {
             random_eval: r_eval,
         })
     }
-}
 
-impl<C: CurveAffine> PartiallyEvaluatedVar<C> {
     pub fn verify(
-        self,
-        expressions: impl Iterator<Item = AssignedValue<C::ScalarExt>>,
+        &self,
+        region: &mut Region<C::ScalarExt>,
+        pev: PartiallyEvaluatedVar<C>,
+        expressions: &[AssignedValue<C::ScalarExt>],
         y: ChallengeY<C>,
         xn: AssignedValue<C::ScalarExt>,
+        offset: &mut usize,
     ) -> Result<EvaluatedVar<C>, Error> {
-        // exected_h_eval = \sum_k expressions_k * y^k
+        // expected_h_eval = \sum_k expressions_k * y^k
+        let main_gate = self.ecc_chip.main_gate();
+        assert!(expressions.len() >= 1);
+        let mut expected_h_eval = expressions[0].clone();
+        let mut y_acc = y.value();
+
+        for expr in expressions.iter().skip(1) {
+            let term = main_gate.mul(region, expr, &y_acc, offset)?;
+            expected_h_eval = main_gate.add(region, &expected_h_eval, &term, offset)?;
+            y_acc = main_gate.mul(region, &y_acc, &y.value(), offset)?;
+        }
+        let one = C::ScalarExt::one();
+        let neg_one = one.neg();
+
+        let xn_sub_one_val = match xn.value() {
+            Some(xn) => Some(xn - &one),
+            None => None,
+        };
+        let (_, xn_sub_one, _, _) = main_gate.combine(
+            region,
+            Term::Assigned(&xn, one),
+            Unassigned(xn_sub_one_val.clone(), neg_one.clone()),
+            Term::Zero,
+            Term::Zero,
+            neg_one,
+            offset,
+            CombinationOption::SingleLinerAdd,
+        )?;
+        let xn_sub_one = AssignedValue::new(xn_sub_one, xn_sub_one_val);
+
+        let (expected_h_eval, _) = main_gate.div(region, &expected_h_eval, &xn_sub_one, offset)?;
 
         // h(X)
+        let mut H = pev.h_commitments[0].clone();
+        let mut xn_power = xn.clone();
+        assert!(pev.h_commitments.len() >= 1);
 
-        unimplemented!()
+        for h_comm in pev.h_commitments.iter().skip(1) {
+            let term = self
+                .ecc_chip
+                .mul_var(region, h_comm.clone(), xn_power.clone(), offset)?;
+            xn_power = main_gate.mul(region, &xn_power, &xn, offset)?;
+            H = self.ecc_chip.add(region, &H, &term, offset)?;
+        }
+
+        Ok(EvaluatedVar {
+            h_commitment: H,
+            random_poly_commitment: pev.random_poly_commitment,
+            random_eval: pev.random_eval,
+            h_eval: expected_h_eval,
+        })
     }
 }
+
+impl<C: CurveAffine> PartiallyEvaluatedVar<C> {}
 
 impl<C: CurveAffine> EvaluatedVar<C> {
     pub fn queries(&self) -> impl Iterator<Item = VerifierQuery<C>> + Clone {
