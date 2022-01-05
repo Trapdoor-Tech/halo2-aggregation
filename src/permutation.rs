@@ -78,7 +78,8 @@ impl<C: CurveAffine> PermutationChip<C> {
 
     pub fn alloc_ev<E, T>(
         &mut self,
-        mut transcript: Option<&mut T>,
+        transcript: &mut Option<&mut T>,
+        transcript_chip: &mut TranscriptChip<C>,
         region: &mut Region<C::ScalarExt>,
         offset: &mut usize,
         cv: CommittedVar<C>,

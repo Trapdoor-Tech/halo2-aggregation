@@ -10,23 +10,23 @@ mod verifier;
 pub use verifier::VerifierChip;
 
 #[derive(Clone, Copy, Debug)]
-struct Theta;
+pub struct Theta;
 type ChallengeTheta<F> = ChallengeScalarVar<F, Theta>;
 
 #[derive(Clone, Copy, Debug)]
-struct Beta;
+pub struct Beta;
 type ChallengeBeta<F> = ChallengeScalarVar<F, Beta>;
 
 #[derive(Clone, Copy, Debug)]
-struct Gamma;
+pub struct Gamma;
 type ChallengeGamma<F> = ChallengeScalarVar<F, Gamma>;
 
 #[derive(Clone, Copy, Debug)]
-struct Y;
+pub struct Y;
 type ChallengeY<F> = ChallengeScalarVar<F, Y>;
 
 #[derive(Clone, Copy, Debug)]
-struct X;
+pub struct X;
 type ChallengeX<F> = ChallengeScalarVar<F, X>;
 
 #[cfg(test)]

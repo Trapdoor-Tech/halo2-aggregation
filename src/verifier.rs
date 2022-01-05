@@ -8,10 +8,10 @@ use halo2::arithmetic::FieldExt;
 use halo2::arithmetic::{CurveAffine, Field};
 use halo2::circuit::Region;
 use halo2::plonk::Error::TranscriptError;
-use halo2::plonk::{Error, Expression, PinnedVerificationKey, VerifyingKey};
+use halo2::plonk::{Any, Column, Error, Expression, PinnedVerificationKey, VerifyingKey};
 use halo2::transcript::{EncodedChallenge, TranscriptRead};
 use halo2wrong::circuit::ecc::base_field_ecc::{BaseFieldEccChip, BaseFieldEccInstruction};
-use halo2wrong::circuit::main_gate::{MainGateColumn, MainGateInstructions};
+use halo2wrong::circuit::main_gate::{MainGate, MainGateColumn, MainGateInstructions};
 use halo2wrong::circuit::{AssignedCondition, AssignedValue};
 use std::fmt::format;
 use std::marker::PhantomData;
@@ -24,6 +24,101 @@ pub struct VerifierChip<'a, C: CurveAffine, E: EncodedChallenge<C>, T: Transcrip
     transcript: Option<&'a mut T>,
     transcript_chip: TranscriptChip<C>,
     _marker: PhantomData<E>,
+}
+
+pub(crate) fn compute_expr<C: CurveAffine>(
+    main_gate: &MainGate<C::ScalarExt>,
+    region: &mut Region<'_, C::ScalarExt>,
+    offset: &mut usize,
+    expression: &Expression<C::ScalarExt>,
+    advice_evals: &[AssignedValue<C::ScalarExt>],
+    fixed_evals: &[AssignedValue<C::ScalarExt>],
+    instance_evals: &[AssignedValue<C::ScalarExt>],
+) -> AssignedValue<C::ScalarExt> {
+    match expression {
+        Expression::Constant(scalar) => main_gate
+            .assign_constant(
+                region,
+                &(Some(scalar.clone()).into()),
+                MainGateColumn::A,
+                offset,
+            )
+            .unwrap(),
+        Expression::Selector(_) => {
+            panic!("virtual selectors are removed during optimization")
+        }
+        Expression::Fixed { query_index, .. } => fixed_evals[*query_index].clone(),
+        Expression::Advice { query_index, .. } => advice_evals[*query_index].clone(),
+        Expression::Instance { query_index, .. } => instance_evals[*query_index].clone(),
+        Expression::Negated(a) => {
+            let a = compute_expr::<C>(
+                main_gate,
+                region,
+                offset,
+                a,
+                advice_evals,
+                fixed_evals,
+                instance_evals,
+            );
+            main_gate.neg(region, a, offset).unwrap()
+        }
+        Expression::Sum(a, b) => {
+            let a = compute_expr::<C>(
+                main_gate,
+                region,
+                offset,
+                a,
+                advice_evals,
+                fixed_evals,
+                instance_evals,
+            );
+            let b = compute_expr::<C>(
+                main_gate,
+                region,
+                offset,
+                b,
+                advice_evals,
+                fixed_evals,
+                instance_evals,
+            );
+            main_gate.add(region, a, b, offset).unwrap()
+        }
+        Expression::Product(a, b) => {
+            let a = compute_expr::<C>(
+                main_gate,
+                region,
+                offset,
+                a,
+                advice_evals,
+                fixed_evals,
+                instance_evals,
+            );
+            let b = compute_expr::<C>(
+                main_gate,
+                region,
+                offset,
+                b,
+                advice_evals,
+                fixed_evals,
+                instance_evals,
+            );
+            main_gate.mul(region, a, b, offset).unwrap()
+        }
+        Expression::Scaled(a, scalar) => {
+            let a = compute_expr::<C>(
+                main_gate,
+                region,
+                offset,
+                a,
+                advice_evals,
+                fixed_evals,
+                instance_evals,
+            );
+            main_gate
+                .mul_by_constant(region, a, *scalar, offset)
+                .unwrap()
+        }
+    }
 }
 
 impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
@@ -54,6 +149,8 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         perm_chunk_len: usize,
         input_expressions: Vec<Expression<C::ScalarExt>>,
         table_expressions: Vec<Expression<C::ScalarExt>>,
+        gates: Vec<Expression<C::ScalarExt>>,
+        perm_columns: &Vec<(Column<Any>, usize)>,
         instance_commitments: &Vec<Option<C>>,
         instance_evals: &Vec<Option<C::ScalarExt>>,
         offset: &mut usize,
@@ -224,26 +321,79 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             })
             .collect::<Result<Vec<_>, Error>>()?;
 
+        let permutations_evaluated = self.perm.alloc_ev(
+            &mut self.transcript,
+            transcript_chip,
+            region,
+            offset,
+            permutations_committed,
+        )?;
+
         let vanishing = {
             let mut xn = x.value();
             for _ in 0..log_n {
                 xn = main_gate.mul(region, &xn, &xn, offset)?;
             }
             // l_evals
-            let mut l_evals : Vec<AssignedValue<C::ScalarExt>> = vec![];
+            let mut l_evals: Vec<AssignedValue<C::ScalarExt>> = vec![];
             assert_eq!(l_evals.len(), 2 + blinding_factors);
             let l_last = l_evals[0].clone();
             let mut l_blind = l_evals[1].clone();
-            for i in 2..(1+blinding_factors) {
+            for i in 2..(1 + blinding_factors) {
                 l_blind = main_gate.add(region, &l_blind, &l_evals[i], offset)?;
             }
-            let l_0 = l_evals[1+blinding_factors].clone();
+            let l_0 = l_evals[1 + blinding_factors].clone();
 
             let mut expressions = vec![];
+
+            for gate in gates.into_iter() {
+                expressions.push(compute_expr::<C>(
+                    &main_gate,
+                    region,
+                    offset,
+                    &gate,
+                    &adv_evals,
+                    &fixed_evals,
+                    &inst_evals,
+                ));
+            }
             for lookup_eval in lookups_evaluated.into_iter() {
-                let expr = self.lookup.expressions(region, lookup_eval, l_0.clone(), l_last.clone(), l_blind.clone(), &input_expressions, &table_expressions, theta.clone(), beta.clone(), gamma.clone(), &adv_evals, &fixed_evals, &inst_evals, offset)?;
+                let expr = self.lookup.expressions(
+                    region,
+                    lookup_eval,
+                    l_0.clone(),
+                    l_last.clone(),
+                    l_blind.clone(),
+                    &input_expressions,
+                    &table_expressions,
+                    theta.clone(),
+                    beta.clone(),
+                    gamma.clone(),
+                    &adv_evals,
+                    &fixed_evals,
+                    &inst_evals,
+                    offset,
+                )?;
                 expressions.extend(expr);
             }
+
+            expressions.extend(self.perm.expressions(
+                region,
+                &permutations_common,
+                &permutations_evaluated,
+                perm_columns,
+                &adv_evals,
+                &fixed_evals,
+                &inst_evals,
+                l_0.clone(),
+                l_last.clone(),
+                l_blind.clone(),
+                beta.clone(),
+                gamma.clone(),
+                x.clone(),
+                perm_chunk_len,
+                offset,
+            )?);
         };
 
         let ret =

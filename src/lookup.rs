@@ -1,5 +1,6 @@
 use crate::multiopen::VerifierQuery;
 use crate::transcript::{TranscriptChip, TranscriptInstruction};
+use crate::verifier::compute_expr;
 use crate::{ChallengeBeta, ChallengeGamma, ChallengeTheta};
 use halo2::arithmetic::{CurveAffine, Field, FieldExt};
 use halo2::circuit::{Chip, Region};
@@ -203,100 +204,7 @@ impl<C: CurveAffine> LookupChip<C> {
         //   Z(omega * x) * (A'(x) + beta) * (S'(x) + gamma)
         //   - Z(x) * (theta^{m-1} a_0(x) + ... + a_{m-1}(x) + beta)
         //      * (theta^{m-1} s_0(x) + ... + s_{m-1}(x) + gamma)) = 0
-        fn compute_expr<C: CurveAffine>(
-            main_gate: &MainGate<C::ScalarExt>,
-            region: &mut Region<'_, C::ScalarExt>,
-            offset: &mut usize,
-            expression: &Expression<C::ScalarExt>,
-            advice_evals: &[AssignedValue<C::ScalarExt>],
-            fixed_evals: &[AssignedValue<C::ScalarExt>],
-            instance_evals: &[AssignedValue<C::ScalarExt>],
-        ) -> AssignedValue<C::ScalarExt> {
-            match expression {
-                Expression::Constant(scalar) => main_gate
-                    .assign_constant(
-                        region,
-                        &(Some(scalar.clone()).into()),
-                        MainGateColumn::A,
-                        offset,
-                    )
-                    .unwrap(),
-                Expression::Selector(_) => {
-                    panic!("virtual selectors are removed during optimization")
-                }
-                Expression::Fixed { query_index, .. } => fixed_evals[*query_index].clone(),
-                Expression::Advice { query_index, .. } => advice_evals[*query_index].clone(),
-                Expression::Instance { query_index, .. } => instance_evals[*query_index].clone(),
-                Expression::Negated(a) => {
-                    let a = compute_expr::<C>(
-                        main_gate,
-                        region,
-                        offset,
-                        a,
-                        advice_evals,
-                        fixed_evals,
-                        instance_evals,
-                    );
-                    main_gate.neg(region, a, offset).unwrap()
-                }
-                Expression::Sum(a, b) => {
-                    let a = compute_expr::<C>(
-                        main_gate,
-                        region,
-                        offset,
-                        a,
-                        advice_evals,
-                        fixed_evals,
-                        instance_evals,
-                    );
-                    let b = compute_expr::<C>(
-                        main_gate,
-                        region,
-                        offset,
-                        b,
-                        advice_evals,
-                        fixed_evals,
-                        instance_evals,
-                    );
-                    main_gate.add(region, a, b, offset).unwrap()
-                }
-                Expression::Product(a, b) => {
-                    let a = compute_expr::<C>(
-                        main_gate,
-                        region,
-                        offset,
-                        a,
-                        advice_evals,
-                        fixed_evals,
-                        instance_evals,
-                    );
-                    let b = compute_expr::<C>(
-                        main_gate,
-                        region,
-                        offset,
-                        b,
-                        advice_evals,
-                        fixed_evals,
-                        instance_evals,
-                    );
-                    main_gate.mul(region, a, b, offset).unwrap()
-                }
-                Expression::Scaled(a, scalar) => {
-                    let a = compute_expr::<C>(
-                        main_gate,
-                        region,
-                        offset,
-                        a,
-                        advice_evals,
-                        fixed_evals,
-                        instance_evals,
-                    );
-                    main_gate
-                        .mul_by_constant(region, a, *scalar, offset)
-                        .unwrap()
-                }
-            }
-        }
+
         fn compress_expressions<C: CurveAffine>(
             exprs: &[Expression<C::ScalarExt>],
             main_gate: &MainGate<C::ScalarExt>,
