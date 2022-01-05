@@ -4,10 +4,10 @@ use crate::transcript::{TranscriptChip, TranscriptInstruction};
 use crate::vanishing::VanishingChip;
 use crate::{Beta, Gamma, Theta, X, Y};
 use blake2b_simd::Params as Blake2bParams;
-use halo2::arithmetic::FieldExt;
+use halo2::arithmetic::{FieldExt, BaseExt};
 use halo2::arithmetic::{CurveAffine, Field};
 use halo2::circuit::Region;
-use halo2::plonk::Error::TranscriptError;
+use halo2::plonk::Error::Transcript;
 use halo2::plonk::{Error, Expression, PinnedVerificationKey, VerifyingKey};
 use halo2::transcript::{EncodedChallenge, TranscriptRead};
 use halo2wrong::circuit::ecc::base_field_ecc::{BaseFieldEccChip, BaseFieldEccInstruction};
@@ -95,7 +95,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
 
             let hash_result = main_gate.assign_value(
                 region,
-                &Some(C::Scalar::from_bytes_wide(hasher.finalize().as_array())).into(),
+                &Some(C::ScalarExt::from_bytes_wide(hasher.finalize().as_array())).into(),
                 MainGateColumn::A,
                 offset,
             )?;
@@ -112,7 +112,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             let comm = {
                 match self.transcript.as_mut() {
                     None => None,
-                    Some(t) => Some(t.read_point().map_err(|_| TranscriptError)?),
+                    Some(t) => Some(t.read_point().map_err(|e| Transcript(e))?),
                 }
             };
             let comm = self.ecc_chip.assign_point(region, comm, offset)?;
@@ -176,7 +176,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             let eval = {
                 match self.transcript.as_mut() {
                     None => None,
-                    Some(t) => Some(t.read_scalar().map_err(|_| TranscriptError)?),
+                    Some(t) => Some(t.read_scalar().map_err(|e| Transcript(e))?),
                 }
             };
             let eval = main_gate.assign_value(region, &eval.into(), MainGateColumn::A, offset)?;
@@ -189,7 +189,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             let eval = {
                 match self.transcript.as_mut() {
                     None => None,
-                    Some(t) => Some(t.read_scalar().map_err(|_| TranscriptError)?),
+                    Some(t) => Some(t.read_scalar().map_err(|e| Transcript(e))?),
                 }
             };
             let eval = main_gate.assign_value(region, &eval.into(), MainGateColumn::A, offset)?;
