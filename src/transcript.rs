@@ -38,6 +38,7 @@ pub trait TranscriptInstruction<C: CurveAffine> {
     );
 }
 
+#[derive(Clone)]
 pub struct TranscriptChip<C: CurveAffine> {
     _marker: PhantomData<C>,
 }

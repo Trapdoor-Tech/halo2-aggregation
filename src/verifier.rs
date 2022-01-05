@@ -8,7 +8,7 @@ use halo2::arithmetic::{FieldExt, BaseExt};
 use halo2::arithmetic::{CurveAffine, Field};
 use halo2::circuit::Region;
 use halo2::plonk::Error::Transcript;
-use halo2::plonk::{Error, Expression, PinnedVerificationKey, VerifyingKey};
+use halo2::plonk::{Error, Expression, PinnedVerificationKey, VerifyingKey, ConstraintSystem};
 use halo2::transcript::{EncodedChallenge, TranscriptRead};
 use halo2wrong::circuit::ecc::base_field_ecc::{BaseFieldEccChip, BaseFieldEccInstruction};
 use halo2wrong::circuit::main_gate::{MainGateColumn, MainGateInstructions};
@@ -79,7 +79,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             inst_evals.push(eval);
         }
 
-        let transcript_chip = &mut self.transcript_chip;
+        let mut transcript_chip =  self.transcript_chip.clone();
         let main_gate = self.ecc_chip.main_gate();
 
         // hash vk into transcript
@@ -127,7 +127,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         for i in (0..num_lookups).into_iter() {
             let pcv =
                 self.lookup
-                    .alloc_pcv(&mut self.transcript, transcript_chip, region, offset)?;
+                    .alloc_pcv(&mut self.transcript, &mut transcript_chip, region, offset)?;
             lookups_permuted.push(pcv);
         }
 
@@ -140,7 +140,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         // { zp_i }
         let permutations_committed = self.perm.alloc_cv(
             &mut self.transcript,
-            transcript_chip,
+            &mut transcript_chip,
             region,
             perm_num_columns,
             perm_chunk_len,
@@ -157,13 +157,13 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
 
         let vanishing =
             self.vanishing
-                .alloc_before_y(&mut self.transcript, transcript_chip, region, offset)?;
+                .alloc_before_y(&mut self.transcript, &mut transcript_chip, region, offset)?;
 
         let y = transcript_chip.squeeze_challenge_scalar::<Y>(region, offset);
 
         let vanishing = self.vanishing.alloc_after_y(
             &mut self.transcript,
-            transcript_chip,
+            &mut transcript_chip,
             vanishing,
             vk.get_domain().get_quotient_poly_degree(),
             region,
@@ -198,14 +198,14 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         }
         let vanishing = self.vanishing.alloc_after_x(
             &mut self.transcript,
-            transcript_chip,
+            &mut transcript_chip,
             vanishing,
             region,
             offset,
         )?;
         let permutations_common = self.perm.alloc_cev(
             &mut self.transcript,
-            transcript_chip,
+            &mut transcript_chip,
             region,
             offset,
             perm_num_columns,
@@ -216,7 +216,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             .map(|lookup_committed| -> Result<EvaluatedVar<C>, Error> {
                 self.lookup.alloc_eval(
                     &mut self.transcript,
-                    transcript_chip,
+                    &mut transcript_chip,
                     region,
                     lookup_committed,
                     offset,
@@ -250,6 +250,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             self.ecc_chip
                 .main_gate()
                 .assign_bit(region, Some(C::ScalarExt::zero()), offset)?;
+        self.transcript_chip = transcript_chip;
 
         Ok(ret)
     }
