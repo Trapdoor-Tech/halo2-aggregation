@@ -1,13 +1,52 @@
-use halo2::arithmetic::CurveAffine;
+use crate::{ChallengeU, ChallengeV, ChallengeX};
+use halo2::arithmetic::{CurveAffine, Field, FieldExt};
+use halo2::circuit::{Chip, Region};
+use halo2::plonk::Advice;
+use halo2::plonk::Error::TranscriptError;
+use halo2::plonk::{Column, ConstraintSystem, Error, TableColumn};
 use halo2::poly::Rotation;
+use halo2::circuit::Layouter;
+use halo2::transcript::{EncodedChallenge, TranscriptRead};
+use halo2wrong::circuit::ecc::base_field_ecc::{BaseFieldEccChip, BaseFieldEccInstruction};
 use halo2wrong::circuit::ecc::AssignedPoint;
-use halo2wrong::circuit::AssignedValue;
+use halo2wrong::circuit::ecc::EccConfig;
+use halo2wrong::circuit::main_gate::{MainGateColumn, MainGateInstructions};
+use halo2wrong::circuit::{Assigned, AssignedValue, UnassignedValue};
+use halo2wrong::rns::Rns;
+use std::collections::BTreeMap;
+use std::marker::PhantomData;
 
 #[derive(Debug, Clone)]
 pub struct VerifierQuery<C: CurveAffine> {
     commitment: AssignedPoint<C::ScalarExt>,
     rotation: Rotation,
     eval: AssignedValue<C::ScalarExt>,
+}
+
+trait Query<F>: Sized + Copy {
+    type Commitment: PartialEq + Copy;
+    type Scalar: Clone + Default + Ord + Copy;
+
+    fn get_rotation(&self) -> Rotation;
+    fn get_eval(&self) -> Self::Scalar;
+    fn get_comm(&self) -> Self::Commitment;
+}
+
+impl<C: CurveAffine> Query<C::ScalarExt> for VerifierQuery<C> {
+    type Commitment = AssignedPoint<C::ScalarExt>;
+    type Scalar = AssignedValue<C::ScalarExt>;
+
+    fn get_rotation(&self) -> Rotation {
+        self.rotation
+    }
+
+    fn get_comm(&self) -> AssignedPoint<C::ScalarExt> {
+        self.commitment
+    }
+
+    fn get_eval(&self) -> AssignedValue<C::ScalarExt> {
+        self.eval
+    }
 }
 
 impl<C: CurveAffine> VerifierQuery<C> {
@@ -21,18 +60,6 @@ impl<C: CurveAffine> VerifierQuery<C> {
             rotation,
             eval,
         }
-    }
-
-    pub fn get_rotation(&self) -> Rotation {
-        self.rotation
-    }
-
-    pub fn get_comm(&self) -> AssginedPoint<C::ScalarExt> {
-        self.commitment
-    }
-
-    pub fn get_eval(&self) -> AssginedValue<C::ScalarExt> {
-        self.eval
     }
 }
 
@@ -88,27 +115,11 @@ impl<C: CurveAffine> MultiopenResult<C> {
 /// TODO: comms, evals, z, wi are instance columns ??? (or read from transcript?)
 /// TODO: did not constrain u/v from transcript
 pub struct MultiopenConfig {
-    // witness: Column<Advice>,
-    // witness_aux: Column<Advice>,
-    // comm_multi: Column<Advice>,
-    // eval_multi: Column<Advice>,
-    // v_sel: Column<Advice>,
-    // u: Column<Advice>,
-    // v: Column<Advice>,
-
-    // u_sel: Column<Fixed>,
-    // comms: Column<Instance>,
-    // evals: Column<Instance>,
-    // z: Column<Instance>,
-    // wi: Column<Instance>,
     rot: Column<Advice>,
     omega_evals: Column<Advice>,
 
     t_rot: TableColumn,
     t_omega_evals: TableColumn,
-
-    // chip to do mul/add arithmetics on commitments/evals
-    ecc_chip: EccConfig,
 }
 
 /// Instructions should be able to compute and fill in witnesses
@@ -117,72 +128,59 @@ pub trait MultiopenInstructions<C: CurveAffine> {
     type Comm;
     type Eval;
 
-    // fn assign_comm(
-    //     &self,
-    //     region: &mut Region<'_, C::ScalarExt>,
-    //     comm: Option<Point<C::ScalarExt>>,
-    //     offset: &mut usize,
-    // ) -> Result<Self::Comm, Error>;
+    fn read_comm(
+        &self,
+        region: &mut Region<'_, C::ScalarExt>,
+        offset: &mut usize,
+    ) -> Result<Self::Comm, Error>;
 
-    // fn assign_eval(
-    //     &self,
-    //     region: &mut Region<'_, C::ScalarExt>,
-    //     eval: Option<C::ScalarExt>,
-    //     offset: &mut usize,
-    // ) -> Result<Self::Eval, Error>;
+    fn read_eval(
+        &self,
+        region: &mut Region<'_, C::ScalarExt>,
+        offset: &mut usize,
+    ) -> Result<Self::Eval, Error>;
 
-    // fn calc_witness(
-    //     &self,
-    //     region: &mut Region<'_, C::ScalarExt>,
-    //     zi: &[C],
-    //     wi: &[C],
-    //     u_sel: &[C],
-    //     u: &C,
-    // ) -> Result<(), Error>;
+    fn lookup_table_pows(
+        &self,
+        layouter: &mut impl Layouter<C::ScalarExt>,
+        omega_evals: &[(Rotation, Self::Eval)],
+        offset: &mut usize,
+    ) -> Result<Self::Eval, Error>;
+
+    fn construct_intermediate_sets<I, Q: Query<C::ScalarExt>>(
+        queries: I,
+    ) -> Vec<VerifierQueriesByRotation<C>>
+    where
+        I: IntoIterator<Item = Q> + Clone;
+
+    fn calc_witness(
+        &self,
+        region: &mut Region<'_, C::ScalarExt>,
+        queries: &[VerifierQuery<C>],
+        omega: &C::ScalarExt,
+        omega_inv: &C::ScalarExt,
+        x: ChallengeX<C>,
+        u: ChallengeU<C>,
+        v: ChallengeV<C>,
+        offset: &mut usize,
+    ) -> Result<Self::Comm, Error>;
 }
 
 pub struct MultiopenChip<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> {
     config: MultiopenConfig,
     transcript: Option<&'a mut T>,
 
+    // chip to do mul/add arithmetics on commitments/evals
     base_ecc_config: EccConfig,
     rns: Rns<C::Base, C::ScalarExt>,
     _marker: PhantomData<E>,
 }
 
-impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> MultiopenInstruction<C>
-    for MultiopenChip<C, E, T>
+impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> MultiopenInstructions<C>
+    for MultiopenChip<'a, C, E, T>
 {
     type Comm = AssignedPoint<C::ScalarExt>;
     type Eval = AssignedValue<C::ScalarExt>;
-
-    // fn assign_comm(
-    //     &self,
-    //     region: &mut Region<'_, C::ScalarExt>,
-    //     comm: Option<C>,
-    //     offset: &mut usize,
-    // ) -> Result<Self::Comm, Error> {
-    //     let base_ecc_chip = self.base_ecc_chip();
-
-    //     // `assign_point` will convert `comm` into an rns point
-    //     base_ecc_chip.assign_point(region, comm?, offset)
-    // }
-
-    // fn assign_eval(
-    //     &self,
-    //     region: &mut Region<'_, C::ScalarExt>,
-    //     eval: Option<C::ScalarExt>,
-    //     offset: &mut usize,
-    // ) -> Result<Self::Eval, Error> {
-    //     let e = region.assign_advice(
-    //         || "evals",
-    //         self.config.evals,
-    //         offset,
-    //         || Ok(eval.ok_or(Error::SynthesisError)?.0),
-    //     )?;
-
-    //     Ok(e)
-    // }
 
     fn read_comm(
         &self,
@@ -193,7 +191,11 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
             None => return TranscriptError,
             Some(t) => t.read_point().map_err(|_| TranscriptError)?,
         };
-        self.ecc_chip.assign_point(region, point, offset)?;
+
+        let ecc_chip = self.base_ecc_chip()?;
+
+        ecc_chip.assign_point(region, point, offset)?;
+
         Ok(point)
     }
 
@@ -206,12 +208,18 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
             None => return TranscriptError,
             Some(t) => t.read_scalar().map_err(|_| TranscriptError)?,
         };
-        self.ecc_chip
+
+        let ecc_chip = self.base_ecc_chip()?;
+
+        ecc_chip
             .main_gate()
             .assign_value(region, eval, MainGateColumn::A, offset)?;
+
         Ok(eval)
     }
 
+    /// use two lookup tabels for calculating `omega ^ rotation`
+    /// these two tables are loaded from circuit
     fn lookup_table_pows(
         &self,
         layouter: &mut impl Layouter<C::ScalarExt>,
@@ -248,9 +256,9 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
         Ok(())
     }
 
-    fn construct_intermediate_sets<C: CurveAffine, I, Q: VerifierQuery<C>>(
+    fn construct_intermediate_sets<I, Q: Query<C::ScalarExt>>(
         queries: I,
-    ) -> Vec<VerifierQueriesByRotation<Q>>
+    ) -> Vec<VerifierQueriesByRotation<C>>
     where
         I: IntoIterator<Item = Q> + Clone,
     {
@@ -280,17 +288,17 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
     /// witness_aux_i = witness_aux_{i-1} * u_sel_i * u + witness_aux_{i-1} * (1 - u_sel_i) + wi_i * u_sel_i
     /// comm_mul_i = comm_mul_{i-1} * u_sel_i * u + comm_mul_{i-1} * (1 - u_sel_i) + comms_i * v_sel_i
     /// eval_mul_i = eval_mul_{i-1} * u_sel_i * u + eval_mul_{i-1} * (1 - u_sel_i) + eval_i * v_sel_i
-    pub fn calc_witness(
+    fn calc_witness(
         &self,
         region: &mut Region<'_, C::ScalarExt>,
         queries: &[VerifierQuery<C>],
-        omega: &C::ScalarExt,     // TODO: omega should be a constant
-        omega_inv: &C::ScalarExt, // TODO: omega should be a constant
+        omega: &C::ScalarExt,
+        omega_inv: &C::ScalarExt,
         x: ChallengeX<C>,
         u: ChallengeU<C>,
         v: ChallengeV<C>,
+        offset: &mut usize,
     ) -> Result<Self::Comm, Error> {
-        let config = self.config();
         let ecc_chip = self.base_ecc_chip();
 
         let mut rot_offset = 0;
@@ -300,7 +308,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
         let queries_by_rotation = self.construct_intermediate_sets(queries);
 
         let one = Some(C::ScalarExt::one());
-        let one = main_gate.assign_constant(region, &one.into(), MainGateColumn::A, offset)?;
+        let one = ecc_chip.main_gate.assign_constant(region, &one.into(), MainGateColumn::A, offset)?;
 
         let omega = ecc_chip.main_gate().assign_constant(
             region,
@@ -353,9 +361,9 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
             let r = queries_at_a_rotation.get_rotation();
 
             let r_geq_zero = if r >= 0 {
-                UnassignedValue::new(Some(F::one()))
+                UnassignedValue::new(Some(C::ScalarExt::one()))
             } else {
-                UnassignedValue::new(Some(F::zero()))
+                UnassignedValue::new(Some(C::ScalarExt::zero()))
             };
             let r_geq_zero = ecc_chip.main_gate().assign_value(
                 region,
@@ -431,192 +439,10 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
 
         Ok(())
     }
-
-    // /// witness_i = witness_{i-1} * u_sel_i * u + witness_{i-1} * (1 - u_sel_i) + z_i * wi_i * u_sel_i
-    // fn calc_witness(
-    //     &self,
-    //     region: &mut Region<'_, C::ScalarExt>,
-    //     zi: &[C],
-    //     wi: &[C],
-    //     u_sel: &[C],
-    //     u: &C,
-    //     // u: ChallengeU<C>,
-    // ) -> Result<Self::Comm, Error> {
-    //     let config = self.config();
-    //     let ecc_chip = self.base_ecc_chip();
-
-    //     assert!(zi_len() == wi.len(), "zi/wi have different length!");
-    //     assert!(zi_len() == u_sel.len(), "zi/u_sel have different length!");
-    //     assert!(zi.len() > 0, "no zi found!");
-
-    //     // use cur_p to store the linear comb of zi/wi
-    //     let mut cur_p = C::zero();
-
-    //     let mut circuit_p = ecc_chip.assign_point(region, Some(cur_p), offset)?;
-    //     let circuit_inf_point = ecc_chip.assign_point(region, Some(C::zero()), offset)?;
-    //     let circuit_z = region.assign_advice(
-    //         || "u",
-    //         self.config.u,
-    //         offset,
-    //         || Ok(u.ok_or(Error::SynthesisError)?.0),
-    //     )?;
-
-    //     for ((z, w), u_s) in zi
-    //         .iter()
-    //         .zip(wi.iter())
-    //         .zip(u_sel.iter())
-    //     {
-    //         // === circuit computation ===
-    //         let circuit_z = region.assign_advice(
-    //             || "zi",
-    //             self.config.zi,
-    //             offset,
-    //             || Ok(z.ok_or(Error::SynthesisError)?.0),
-    //         )?;
-
-    //         let circuit_w = ecc_chip.mul_var(region, circuit_w, circuit_z, offset)?;
-
-    //         let circuit_u_sel = region.assign_advice(
-    //             || "u_sel",
-    //             self.config.u_sel,
-    //             offset,
-    //             || Ok(u_s.ok_or(Error::SynthesisError)?.0),
-    //         )?;
-
-    //         let circuit_p_prev_selected =
-    //             ecc_chip.mul_var(region, circuit_p_prev, circuit_z, offset)?;
-
-    //         // convert `u_sel` from `AssignedValue` to `AssignedCondition`
-    //         let circuit_p_prev = ecc_chip.select(
-    //             region,
-    //             u_sel.into(),
-    //             circuit_p_prev_selected,
-    //             circuit_p_prev,
-    //         )?;
-    //         let circuit_w = ecc_chip.select(region, u_sel.into(), circuit_w, circuit_inf_point)?;
-
-    //         circuit_p = ecc_chip.add(region, &circuit_w, &circuit_p_prev, offset)?;
-
-    //         // === non circuit computation ===
-    //         cur_p =
-    //             w.mul(z * u_s) + &(cur_p.mul(u_s * u) + &cur_p.mul(C::ScalarExt::one() - u_s));
-    //     }
-
-    //     let circuit_cur_p = ecc.assign_point(region, cur_p, offset)?;
-
-    //     ecc_chip.assert_equal(region, &circuit_p, &circuit_cur_p, offset)?;
-
-    //     Ok(())
-    // }
-
-    // /// witness_aux_i = witness_aux_{i-1} * u_sel_i * u + witness_aux_{i-1} * (1 - u_sel_i) + wi_i * u_sel_i
-    // fn calc_witness_aux(
-    //     &self,
-    //     region: &mut Region<'_, C::ScalarExt>,
-    //     wi: &[C],
-    //     u_sel: &[C],
-    //     u: &C,
-    // ) -> Result<(), Error> {
-    //     let config = self.config();
-    //     let ecc_chip = self.base_ecc_chip();
-
-    //     assert!(wi.len() == u_sel.len(), "wi/u_sel have different length!");
-    //     assert!(wi.len() > 0, "no wi found!");
-
-    //     let mut p_prev = C::zero();
-
-    //     for (w, u_s) in wi.iter().skip(1).zip(u_sel.iter().skip(1)) {
-    //         let cur_p = w.mul(u_s) + &(p_prev.mul(u_s * u) + p_prev.mul(C::ScalarExt::one() - u_s));
-
-    //         ecc_chip.assign_point(region, cur_p, offset);
-    //     }
-
-    //     Ok(())
-    // }
-
-    // /// comm_mul_i = comm_mul_{i-1} * u_sel_i * u + comm_mul_{i-1} * (1 - u_sel_i) + comms_i * v_sel_i
-    // fn calc_comms_multi(
-    //     &self,
-    //     region: &mut Region<'_, C::ScalarExt>,
-    //     comms: &[C],
-    //     u_sel: &[C],
-    //     v_sel: &[C],
-    //     u: &C,
-    // ) -> Result<(), Error> {
-    //     let config = self.config();
-    //     let ecc_chip = self.base_ecc_chip();
-
-    //     assert!(
-    //         comms.len() == u_sel.len(),
-    //         "comms/u_sel have different length!"
-    //     );
-    //     assert!(
-    //         comms.len() == v_sel.len(),
-    //         "comms/v_sel have different length!"
-    //     );
-    //     assert!(comms.len() > 0, "no comms found!");
-
-    //     let mut p_prev = comms[0].clone();
-    //     ecc_chip.assign_point(region, p_prev, offset);
-
-    //     for ((comm, u_s), v_s) in comms
-    //         .iter()
-    //         .skip(1)
-    //         .zip(u_sel.iter().skip(1))
-    //         .zip(v_sel.iter().skip(1))
-    //     {
-    //         let cur_p =
-    //             comm.mul(v_s) + &(p_prev.mul(u_s * u) + p_prev.mul(C::ScalarExt::one() - u_s));
-
-    //         ecc_chip.assign_point(region, cur_p, offset);
-    //     }
-
-    //     Ok(())
-    // }
-
-    // /// eval_mul_i = eval_mul_{i-1} * u_sel_i * u + eval_mul_{i-1} * (1 - u_sel_i) + eval_i * v_sel_i
-    // fn calc_evals_multi(
-    //     &self,
-    //     region: &mut Region<'_, C::ScalarExt>,
-    //     evals: &[C::ScalarExt],
-    //     u_sel: &[C],
-    //     v_sel: &[C],
-    //     u: &C,
-    // ) -> Result<(), Error> {
-    //     let config = self.config();
-    //     let ecc_chip = self.base_ecc_chip();
-
-    //     assert!(
-    //         evals.len() == u_sel.len(),
-    //         "evals/u_sel have different length!"
-    //     );
-    //     assert!(
-    //         evals.len() == v_sel.len(),
-    //         "evals/v_sel have different length!"
-    //     );
-    //     assert!(comms.len() > 0, "no comms found!");
-
-    //     let mut e_prev = evals[0].clone();
-    //     ecc_chip.assign_point(region, e_prev, offset);
-
-    //     for ((eval, u_s), v_s) in eval
-    //         .iter()
-    //         .skip(1)
-    //         .zip(u_sel.iter().skip(1))
-    //         .zip(v_sel.iter().skip(1))
-    //     {
-    //         let cur_e =
-    //             eval * v_s + &(&(e_prev * &(u_s * u)) + (e_prev * &(C::ScalarExt::one() - u_s)));
-
-    //         region.assign_advice(|| "evals", config.eval_multi, offset, || cur_e)?;
-    //     }
-
-    //     Ok(())
-    // }
 }
 
 impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Chip<C::ScalarExt>
-    for MultiopenChip<'a, C, E>
+    for MultiopenChip<'a, C, E, T>
 {
     type Config = MultiopenConfig;
     type Loaded = ();
@@ -631,7 +457,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Chip<C
 }
 
 /// To simplify MSM computation, we calculate every commitment/eval while accumulating
-impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> MultiopenChip<'a, C, E> {
+impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> MultiopenChip<'a, C, E, T> {
     fn new(
         config: MultiopenConfig,
         ecc_config: EccConfig,
@@ -645,7 +471,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
         }
     }
 
-    fn base_ecc_chip(&self) -> Result<BaseFieldEccConfig, Error> {
+    fn base_ecc_chip(&self) -> Result<BaseFieldEccChip<C>, Error> {
         let base_ecc_config = self.base_ecc_config.clone();
         let rns = self.rns.clone();
         BaseFieldEccChip::<C>::new(base_ecc_config, rns)
@@ -672,94 +498,6 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
             omega_evals,
             t_rot,
             t_omega_evals,
-            ecc_chip,
         }
     }
-
-    // fn configure(
-    //     meta: &mut ConstraintSystem<F>,
-    //     advice: [Column<Advice>; 7],
-    //     fixed: [Column<Fixed>; 1],
-    //     instace: [Column<Instance>; 4],
-    // ) -> PlonkConfig {
-    //     let witness = advice[0];
-    //     let witness_aux = advice[1];
-    //     let comm_multi = advice[2];
-    //     let eval_multi = advice[3];
-    //     let v_sel = advice[4];
-    //     let u = advice[5];
-    //     let v = advice[6];
-
-    //     let u_sel = fixed[0];
-
-    //     let comms = instance[0];
-    //     let evals = instance[1];
-    //     let z = instance[2];
-    //     let wi = instance[3];
-
-    //     meta.create_gate("multiopen custom gate", |meta| {
-    //         let witness = meta.query_advice(witness, Rotation::cur());
-    //         let witness_prev = meta.query_advice(witness, Rotation::prev());
-    //         let witness_aux = meta.query_advice(witness_aux, Rotation::cur());
-    //         let witness_aux_prev = meta.query_advice(witness_aux, Rotation::prev());
-
-    //         let comm_multi = meta.query_advice(comm_multi, Rotation::cur());
-    //         let comm_multi_prev = meta.query_advice(comm_multi, Rotation::prev());
-    //         let eval_multi = meta.query_advice(eval_multi, Rotation::cur());
-    //         let eval_multi_prev = meta.query_advice(eval_multi, Rotation::prev());
-    //         let v_sel = meta.query_advice(v_sel, Rotation::cur());
-
-    //         // TODO: is this correct?
-    //         let u = meta.query_advice(u, Rotation::cur());
-    //         // TODO: is this correct?
-    //         let v = meta.query_advice(u, Rotation::cur());
-
-    //         let u_sel = meta.query_fixed(u_sel, Rotation::cur());
-    //         let u_sel_prev = meta.query_fixed(u_sel, Rotation::prev());
-
-    //         let comms = meta.query_instance(comms, Rotation::cur());
-    //         let comms_prev = meta.query_instance(comms, Rotation::prev());
-    //         let evals = meta.query_instance(evals, Rotation::cur());
-    //         let evals_prev = meta.query_instance(evals, Rotation::prev());
-    //         let z = meta.query_instance(z, Rotation::cur());
-    //         let wi = meta.query_instance(wi, Rotation::cur());
-
-    //         // 5 constraints as described previously
-    //         // TODO: is this correct?
-    //         vec![
-    //             witness_prev * u_sel * u
-    //                 + witness_prev * (F::one() - u_sel)
-    //                 + z * wi * u_sel
-    //                 + (witness * (-F::one())),
-    //             witness_aux_prev * u_sel * u
-    //                 + witness_aux_prev * (F::one() - u_sel)
-    //                 + wi * u_sel
-    //                 + (witness_aux * (-F::one())),
-    //             comm_mul_prev * u_sel * u
-    //                 + comm_mul_prev * (F::one() - u_sel)
-    //                 + comms * v_sel
-    //                 + (comms_mul * (-F::one())),
-    //             eval_mul_prev * u_sel * u
-    //                 + eval_mul_prev * (F::one() - u_sel)
-    //                 + evals * v_sel
-    //                 + (eval_mul * (-F::one())),
-    //             v_sel + v * u_sel,
-    //         ]
-    //     });
-
-    //     MultiopenConfig {
-    //         witness,
-    //         witness_aux,
-    //         comm_multi,
-    //         eval_multi,
-    //         v_sel,
-    //         u,
-    //         v,
-    //         u_sel,
-    //         comms,
-    //         evals,
-    //         z,
-    //         wi,
-    //     }
-    // }
 }
