@@ -1,13 +1,18 @@
 [package]
 name = "halo2-aggregation"
 version = "0.1.0"
-edition = "2021"
+edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-halo2wrong = { path = "../halo2wrong" }
-#halo2wrong = {git = "https://github.com/trapdoor-tech/halo2wrong", branch="agg"}
-halo2 = { path = "../halo2" }
-#halo2 = { git="https://github.com/trapdoor-tech/halo2.git", branch="agg"}
-blake2b_simd = "0.5"
+halo2wrong = { git="ssh://git@github.com/Trapdoor-Tech/halo2wrong.git", branch="agg" }
+#halo2wrong = { path = "../halo2wrong" }
+halo2 = { git="ssh://git@github.com/Trapdoor-Tech/halo2.git", branch="kzg-agg"}
+#halo2 = { path = "../halo2" }
+
+[dev-dependencies]
+#pairing = { path = "../pairing", package = "pairing_bn256" }
+pairing = { git = "ssh://git@github.com/Trapdoor-Tech/zkevm_pairing.git", package = "pairing_bn256" }
+rand = "0.8"
+rand_core = { version = "0.6", default-features = false }

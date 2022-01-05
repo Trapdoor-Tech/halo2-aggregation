@@ -3,10 +3,10 @@ use crate::transcript::{TranscriptChip, TranscriptInstruction};
 use crate::{ChallengeBeta, ChallengeGamma, ChallengeX};
 use halo2::arithmetic::{CurveAffine, Field, FieldExt};
 use halo2::circuit::Region;
-use halo2::plonk::Error::TranscriptError;
+use halo2::plonk::Error::Transcript;
 use halo2::plonk::{Any, Column, ConstraintSystem, Error, VerifyingKey};
 use halo2::poly::Rotation;
-use halo2::transcript::{EncodedChallenge, Transcript, TranscriptRead};
+use halo2::transcript::{EncodedChallenge, TranscriptRead};
 use halo2wrong::circuit::ecc::base_field_ecc::{BaseFieldEccChip, BaseFieldEccInstruction};
 use halo2wrong::circuit::ecc::AssignedPoint;
 use halo2wrong::circuit::main_gate::{MainGateColumn, MainGateInstructions};
@@ -62,7 +62,7 @@ impl<C: CurveAffine> PermutationChip<C> {
             .map(|_| -> Result<AssignedPoint<C::ScalarExt>, Error> {
                 let point = match transcript.as_mut() {
                     None => None,
-                    Some(t) => Some(t.read_point().map_err(|_| TranscriptError)?),
+                    Some(t) => Some(t.read_point().map_err(|e| Transcript(e))?),
                 };
                 self.ecc_chip.assign_point(region, point, offset)
             })
@@ -94,14 +94,14 @@ impl<C: CurveAffine> PermutationChip<C> {
             let (zp, zp_next) = match transcript.as_mut() {
                 None => (None, None),
                 Some(t) => (
-                    Some(t.read_scalar().map_err(|_| TranscriptError)?),
-                    Some(t.read_scalar().map_err(|_| TranscriptError)?),
+                    Some(t.read_scalar().map_err(|e| Transcript(e))?),
+                    Some(t.read_scalar().map_err(|e| Transcript(e))?),
                 ),
             };
             let zp_last_eval = if iter.len() > 0 {
                 let scalar = match transcript.as_mut() {
                     None => None,
-                    Some(t) => Some(t.read_scalar().map_err(|_| TranscriptError)?),
+                    Some(t) => Some(t.read_scalar().map_err(|e| Transcript(e))?),
                 };
                 Some(self.ecc_chip.main_gate().assign_value(
                     region,
@@ -152,7 +152,7 @@ impl<C: CurveAffine> PermutationChip<C> {
             .map(|_| -> Result<AssignedValue<C::ScalarExt>, Error> {
                 let scalar = match transcript.as_mut() {
                     None => None,
-                    Some(t) => Some(t.read_scalar().map_err(|_| TranscriptError)?),
+                    Some(t) => Some(t.read_scalar().map_err(|e| Transcript(e))?),
                 };
                 let scalar = self.ecc_chip.main_gate().assign_value(
                     region,
