@@ -45,10 +45,10 @@ where
 
 #[derive(Debug, Clone)]
 pub struct MultiopenVar<C: CurveAffine> {
-    witness: AssignedPoint<C::ScalarExt>,
-    witness_with_aux: AssignedPoint<C::ScalarExt>,
-    commitment_multi: AssignedPoint<C::ScalarExt>,
-    eval_multi: AssignedValue<C::ScalarExt>,
+    w: AssignedPoint<C::ScalarExt>,
+    zw: AssignedPoint<C::ScalarExt>,
+    f: AssignedPoint<C::ScalarExt>,
+    e: AssignedPoint<C::ScalarExt>,
 }
 
 #[derive(Debug, Clone)]
@@ -173,6 +173,7 @@ pub trait MultiopenInstructions<C: CurveAffine> {
         queries: &[VerifierQuery<C>],
         omega: &C::ScalarExt,
         omega_inv: &C::ScalarExt,
+        g1: &C,
         x: ChallengeX<C>,
         u: ChallengeU<C>,
         v: ChallengeV<C>,
@@ -270,6 +271,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
         queries: &[VerifierQuery<C>],
         omega: &C::ScalarExt,
         omega_inv: &C::ScalarExt,
+        g1: &C,
         x: ChallengeX<C>,
         u: ChallengeU<C>,
         v: ChallengeV<C>,
@@ -453,11 +455,14 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
                 .add(region, eval_multi, eval_batch, offset)?;
         }
 
+        let circuit_g1 = ecc_chip.assign_point(region, Some(*g1), offset)?;
+        let circuit_e = ecc_chip.mul_var(region, circuit_g1.clone(), eval_multi.clone(), offset)?;
+
         let result = MultiopenVar {
-            witness,
-            witness_with_aux,
-            commitment_multi,
-            eval_multi,
+            w: witness.clone(),
+            zw: witness_with_aux.clone(),
+            f: commitment_multi.clone(),
+            e: circuit_e.clone(),
         };
 
         Ok(result)
