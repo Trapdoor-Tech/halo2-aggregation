@@ -156,28 +156,12 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         gates: Vec<Expression<C::ScalarExt>>,
         perm_columns: &Vec<(Column<Any>, usize)>,
         instance_commitments: &Vec<Option<C>>,
-        instance_evals: &Vec<Option<C::ScalarExt>>,
         offset: &mut usize,
     ) -> Result<AssignedCondition<C::ScalarExt>, Error> {
-        assert_eq!(instance_commitments.len(), instance_evals.len());
-        // instance commitments and evals are public inputs to this chip
         let mut inst_comms = vec![];
         for inst_comm in instance_commitments.into_iter() {
             let comm = self.ecc_chip.assign_point(region, *inst_comm, offset)?;
             inst_comms.push(comm);
-        }
-
-        let mut inst_evals = vec![];
-        for inst_eval in instance_evals.into_iter() {
-            // TODO: they are public inputs
-            let eval = self.ecc_chip.main_gate().assign_value(
-                region,
-                &(*inst_eval).into(),
-                MainGateColumn::A,
-                offset,
-            )?;
-            // region.assign_advice_from_instance()
-            inst_evals.push(eval);
         }
 
         let transcript_chip = &mut self.transcript_chip;
@@ -272,6 +256,20 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         )?;
 
         let x = transcript_chip.squeeze_challenge_scalar::<X>(region, offset);
+
+        let mut inst_evals = vec![];
+        for _ in 0..inst_comms.len() {
+            let eval = {
+                match self.transcript.as_mut() {
+                    None => None,
+                    Some(t) => Some(t.read_scalar().map_err(|_| TranscriptError)?),
+                }
+            };
+            let eval = main_gate.assign_value(region, &eval.into(), MainGateColumn::A, offset)?;
+            inst_evals.push(eval.clone());
+            transcript_chip.common_scalar(region, eval, offset);
+        }
+
         let mut adv_evals = vec![];
         for _ in (0..num_adv_columns).into_iter() {
             let eval = {
