@@ -1,4 +1,5 @@
 use crate::lookup::{CommittedVar, EvaluatedVar, LookupChip};
+use crate::multiopen::VerifierQuery;
 use crate::permutation::PermutationChip;
 use crate::transcript::{TranscriptChip, TranscriptInstruction};
 use crate::vanishing::VanishingChip;
@@ -8,7 +9,10 @@ use halo2::arithmetic::FieldExt;
 use halo2::arithmetic::{CurveAffine, Field};
 use halo2::circuit::Region;
 use halo2::plonk::Error::TranscriptError;
-use halo2::plonk::{Any, Column, Error, Expression, PinnedVerificationKey, VerifyingKey};
+use halo2::plonk::{
+    Advice, Any, Column, Error, Expression, Fixed, Instance, PinnedVerificationKey, VerifyingKey,
+};
+use halo2::poly::Rotation;
 use halo2::transcript::{EncodedChallenge, TranscriptRead};
 use halo2wrong::circuit::ecc::base_field_ecc::{BaseFieldEccChip, BaseFieldEccInstruction};
 use halo2wrong::circuit::main_gate::{
@@ -155,9 +159,14 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         table_expressions: Vec<Expression<C::ScalarExt>>,
         gates: Vec<Expression<C::ScalarExt>>,
         perm_columns: &Vec<(Column<Any>, usize)>,
+        fixed_commitments: &Vec<C>,
         instance_commitments: &Vec<Option<C>>,
+        instance_queries: Vec<(Column<Instance>, Rotation)>,
+        advice_queries: Vec<(Column<Advice>, Rotation)>,
+        fixed_queries: Vec<(Column<Fixed>, Rotation)>,
         offset: &mut usize,
     ) -> Result<AssignedCondition<C::ScalarExt>, Error> {
+        // TODO: these points should be public inputs
         let mut inst_comms = vec![];
         for inst_comm in instance_commitments.into_iter() {
             let comm = self.ecc_chip.assign_point(region, *inst_comm, offset)?;
@@ -167,6 +176,14 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         let transcript_chip = &mut self.transcript_chip;
         let main_gate = self.ecc_chip.main_gate();
 
+        let mut fixed_comms = vec![];
+        for fixed_comm in fixed_commitments {
+            // TODO: alloc point from constant
+            let point = self
+                .ecc_chip
+                .assign_point(region, Some(*fixed_comm), offset)?;
+            fixed_comms.push(point);
+        }
         // hash vk into transcript
         {
             let mut hasher = Blake2bParams::new()
@@ -328,7 +345,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             transcript_chip,
             region,
             offset,
-            permutations_committed,
+            permutations_committed.clone(),
         )?;
 
         let vanishing = {
@@ -419,10 +436,10 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
                     &inst_evals,
                 ));
             }
-            for lookup_eval in lookups_evaluated.into_iter() {
+            for lookup_eval in lookups_evaluated.iter() {
                 let expr = self.lookup.expressions(
                     region,
-                    lookup_eval,
+                    lookup_eval.clone(),
                     l_0.clone(),
                     l_last.clone(),
                     l_blind.clone(),
@@ -465,6 +482,72 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
                 offset,
             )?
         };
+
+        let queries = {
+            let inst_queries = instance_queries
+                .iter()
+                .enumerate()
+                .map(|(query_index, &(column, at))| {
+                    VerifierQuery::<C>::new(
+                        inst_comms[column.index()].clone(),
+                        at,
+                        inst_evals[query_index].clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let adv_queries = advice_queries
+                .iter()
+                .enumerate()
+                .map(|(query_index, &(column, at))| {
+                    VerifierQuery::<C>::new(
+                        adv_comms[column.index()].clone(),
+                        at,
+                        adv_evals[query_index].clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let fixed_queries = fixed_queries
+                .iter()
+                .enumerate()
+                .map(|(query_index, &(column, at))| {
+                    VerifierQuery::<C>::new(
+                        fixed_comms[column.index()].clone(),
+                        at,
+                        fixed_evals[query_index].clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let perm_queries = permutations_evaluated.queries(blinding_factors as isize);
+            let lookup_queries = lookups_evaluated
+                .iter()
+                .flat_map(|p| p.queries())
+                .collect::<Vec<_>>();
+            let perm_common_queries = permutations_committed
+                .permutation_product_commitments
+                .iter()
+                .zip(permutations_common.permutation_evals.iter())
+                .map(|(comm, eval)| {
+                    VerifierQuery::<C>::new(comm.clone(), Rotation::cur(), eval.clone())
+                })
+                .collect::<Vec<_>>();
+            let vanishing_queries = vanishing.queries().collect::<Vec<_>>();
+
+            let mut queries = vec![];
+            queries.extend(inst_queries);
+            queries.extend(adv_queries);
+            queries.extend(perm_queries);
+            queries.extend(lookup_queries);
+            queries.extend(fixed_queries);
+            queries.extend(perm_common_queries);
+            queries.extend(vanishing_queries);
+
+            queries
+        };
+
+        // TODO: use MultiOpenChip to verify these queries
 
         let ret =
             self.ecc_chip

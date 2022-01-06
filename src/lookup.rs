@@ -15,16 +15,19 @@ use halo2wrong::circuit::{AssignedValue, UnassignedValue};
 use std::iter;
 use std::marker::PhantomData;
 
+#[derive(Clone)]
 pub struct PermutationCommitmentsVar<C: CurveAffine> {
     permuted_input_commitment: AssignedPoint<C::ScalarExt>, // A'
     permuted_table_commitment: AssignedPoint<C::ScalarExt>, // S'
 }
 
+#[derive(Clone)]
 pub struct CommittedVar<C: CurveAffine> {
     permuted: PermutationCommitmentsVar<C>,
     product_commitment: AssignedPoint<C::ScalarExt>, // Z
 }
 
+#[derive(Clone)]
 pub struct EvaluatedVar<C: CurveAffine> {
     committed: CommittedVar<C>,
     product_eval: AssignedValue<C::ScalarExt>,      // Z(z)

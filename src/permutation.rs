@@ -15,9 +15,10 @@ use std::marker::PhantomData;
 use std::ops::MulAssign;
 use std::{io, iter};
 
+#[derive(Clone, Debug)]
 pub struct CommittedVar<C: CurveAffine> {
     // commitment of grand product polynomials of permutation argument
-    permutation_product_commitments: Vec<AssignedPoint<C::ScalarExt>>,
+    pub permutation_product_commitments: Vec<AssignedPoint<C::ScalarExt>>,
 }
 
 pub struct EvaluatedSetVar<C: CurveAffine> {
@@ -32,7 +33,7 @@ pub struct EvaluatedVar<C: CurveAffine> {
 }
 
 pub struct CommonEvaluatedVar<C: CurveAffine> {
-    permutation_evals: Vec<AssignedValue<C::ScalarExt>>, // { sigma_i(z) }
+    pub permutation_evals: Vec<AssignedValue<C::ScalarExt>>, // { sigma_i(z) }
 }
 
 pub struct PermutationChip<C: CurveAffine> {
