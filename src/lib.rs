@@ -31,12 +31,12 @@ type ChallengeX<F> = ChallengeScalarVar<F, X>;
 
 // U is used in constructing lc between point sets
 #[derive(Clone, Copy, Debug)]
-struct U;
+pub struct U;
 type ChallengeU<F> = ChallengeScalarVar<F, U>;
 
 // V is used in constructing lc within a point set
 #[derive(Clone, Copy, Debug)]
-struct V;
+pub struct V;
 type ChallengeV<F> = ChallengeScalarVar<F, V>;
 
 #[cfg(test)]
