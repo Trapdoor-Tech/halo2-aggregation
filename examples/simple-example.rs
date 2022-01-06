@@ -6,11 +6,20 @@ use halo2::{
     plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Fixed, Instance, Selector},
     poly::Rotation,
 };
-use halo2::plonk::{keygen_vk, keygen_pk, create_proof, verify_proof};
+use halo2::plonk::{keygen_vk, keygen_pk, create_proof, verify_proof, VerifyingKey};
 use halo2::poly::commitment::Setup;
 use pairing::bn256::Bn256;
 use rand::thread_rng;
-use halo2::transcript::{Blake2bWrite, Challenge255, Blake2bRead};
+use halo2::transcript::{Blake2bWrite, Challenge255, Blake2bRead, TranscriptRead, EncodedChallenge};
+use halo2wrong::circuit::main_gate::{MainGateConfig, MainGate};
+use halo2::arithmetic::CurveAffine;
+use halo2wrong::circuit::ecc::EccConfig;
+use halo2wrong::circuit::range::RangeChip;
+use halo2wrong::rns::Rns;
+use halo2wrong::circuit::ecc::base_field_ecc::BaseFieldEccChip;
+use halo2_aggregation::VerifierChip;
+use pairing::group::Curve;
+use std::io::Read;
 
 // ANCHOR: instructions
 trait NumericInstructions<F: FieldExt>: Chip<F> {
@@ -350,9 +359,143 @@ impl<F: FieldExt> Circuit<F> for MyCircuit<F> {
 }
 // ANCHOR_END: circuit
 
+/// The following is the single proof circuit
+
+const BIT_LEN_LIMB: usize = 68;
+const NUMBER_OF_LOOKUP_LIMBS: usize = 4;
+
+#[derive(Clone, Debug)]
+struct SingleProofConfig {
+    ecc_config: EccConfig
+}
+
+fn rns<C: CurveAffine, N: FieldExt>() -> (Rns<C::Base, N>, Rns<C::ScalarExt, N>) {
+    let rns_base = Rns::<C::Base, N>::construct(BIT_LEN_LIMB);
+    let rns_scalar = Rns::<C::Scalar, N>::construct(BIT_LEN_LIMB);
+    (rns_base, rns_scalar)
+}
+
+fn setup<C: CurveAffine, N: FieldExt>(k_override: u32) -> (Rns<C::Base, N>, Rns<C::ScalarExt, N>, u32) {
+    let (rns_base, rns_scalar) = rns::<C, N>();
+    let bit_len_lookup = BIT_LEN_LIMB / NUMBER_OF_LOOKUP_LIMBS;
+    #[cfg(not(feature = "no_lookup"))]
+        let mut k: u32 = (bit_len_lookup + 1) as u32;
+    #[cfg(feature = "no_lookup")]
+        let mut k: u32 = 8;
+    if k_override != 0 {
+        k = k_override;
+    }
+    (rns_base, rns_scalar, k)
+}
+
+impl SingleProofConfig {
+    fn new<C: CurveAffine, N: FieldExt>(meta: &mut ConstraintSystem<N>) -> Self {
+        let main_gate_config = MainGate::<N>::configure(meta);
+
+        let (rns_base, rns_scalar) = rns::<C, N>();
+
+        let mut overflow_bit_lengths: Vec<usize> = vec![];
+        overflow_bit_lengths.extend(rns_base.overflow_lengths());
+        overflow_bit_lengths.extend(rns_scalar.overflow_lengths());
+
+        let range_config = RangeChip::<N>::configure(meta, &main_gate_config, overflow_bit_lengths);
+
+        Self {
+            ecc_config: EccConfig::new(main_gate_config, range_config),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SingleProofCircuit<C: CurveAffine, N: FieldExt, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> {
+    log_n: usize,
+    num_proofs: usize,
+    vk: VerifyingKey<C>,
+    rns_base: Rns<C::Base, N>,
+    rns_scalar: Rns<C::ScalarExt, N>,
+    transcript: T,
+
+    instance_commitments: Vec<Option<C>>,
+    instance_evals: Vec<Option<C::ScalarExt>>,
+    _marker: PhantomData<E>,
+}
+
+impl<C: CurveAffine + CurveAffine<ScalarExt = N>, N: FieldExt, E: EncodedChallenge<C>, T: Clone + TranscriptRead<C, E>> Circuit<N> for SingleProofCircuit<C, N, E, T> {
+    type Config = SingleProofConfig;
+    type FloorPlanner = SimpleFloorPlanner;
+
+    fn without_witnesses(&self) -> Self {
+        Self {
+            log_n: self.log_n,
+            num_proofs: self.num_proofs,
+            vk: self.vk.clone(),
+            rns_base: self.rns_base.clone(),
+            rns_scalar: self.rns_scalar.clone(),
+            transcript: self.transcript.clone(),
+
+            instance_commitments: vec![None],
+            instance_evals: vec![None],
+            _marker: self._marker,
+        }
+    }
+
+    fn configure(meta: &mut ConstraintSystem<N>) -> Self::Config {
+        SingleProofConfig::new::<C, N>(meta)
+    }
+
+    fn synthesize(&self, config: Self::Config, mut layouter: impl Layouter<N>) -> Result<(), Error> {
+        let ecc_chip = BaseFieldEccChip::<C>::new(config.ecc_config.clone(), self.rns_base.clone())?;
+
+        let mut transcript = self.transcript.clone();
+
+        // TODO: transcript will be replace when it is finished
+        let mut verifier_chip = VerifierChip::<C, E, T>::new(ecc_chip, Some(&mut transcript));
+
+        layouter.assign_region(
+            || "verfiy_single_0",
+            |mut region| {
+                let vk = &self.vk;
+                let num_lookups = self.num_proofs * vk.cs.lookups.len();
+                let perm_chunk_len = vk.cs.degree() - 2;
+                let perm_num_columns = vk.permutation.get_perm_column_num();
+                let mut input_expressions = vec![];
+                let mut table_expressions = vec![];
+                let mut offset = 0usize;
+
+                for argument in vk.cs.lookups.iter() {
+                    for input_expression in argument.input_expressions.iter() {
+                        input_expressions.push(input_expression.clone());
+                    }
+                    for table_expression in argument.table_expressions.iter() {
+                        table_expressions.push(table_expression.clone());
+                    }
+                }
+                verifier_chip.verify_proof(
+                    &mut region,
+                    vk,
+                    self.log_n,
+                    vk.cs.blinding_factors(),
+                    vk.cs.num_advice_columns,
+                    vk.cs.num_fixed_columns,
+                    num_lookups,
+                    perm_num_columns,
+                    perm_chunk_len,
+                    input_expressions,
+                    table_expressions,
+                    &self.instance_commitments,
+                    &self.instance_evals,
+                    &mut offset,
+                );
+                Ok(())
+            }
+        )
+    }
+}
+
 fn main() {
     use halo2::dev::MockProver;
     use pairing::bn256::Fr as Fp;
+    use pairing::bn256::G1Affine;
 
     // ANCHOR: test-circuit
     // The number of rows in our circuit cannot exceed 2^k. Since our example
@@ -409,6 +552,81 @@ fn main() {
         &params,
         &pk,
         &[circuit.clone()],
+        &[&[&public_inputs[..]]],
+        &mut transcript,
+    ).expect("proof generation should not fail");
+    let proof: Vec<u8> = transcript.finalize();
+    println!("proof size is {:?}", proof.len());
+
+    // assert_eq!(
+    //     proof.len(),
+    //     halo2::dev::CircuitCost::<G1, MyCircuit<_>>::measure(K as usize, &circuit)
+    //         .proof_size(2)
+    //         .into(),
+    // );
+
+    let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
+
+    assert!(bool::from(
+        verify_proof(
+            &params_verifier,
+            pk.get_vk(),
+            &[&[&public_inputs[..]]],
+            &mut transcript,
+        ).unwrap()
+    ));
+    println!("circuit proof valid!");
+
+
+    // Single proof circuit
+    // 1. generate rns_base and rns_scalar
+    let (rns_base, rns_scalar, single_proof_k) = setup::<G1Affine, Fp>(0);
+
+    // 2. generate instance commitments
+    let instance_commitment = {
+        if public_inputs.len() > params_verifier.get_n() - (pk.get_vk().cs.blinding_factors() + 1) {
+            panic!("Instance for single proof is too large");
+        }
+        params_verifier.commit_lagrange(public_inputs.clone()).to_affine()
+    };
+
+    // 3. construct the single proof circuit structure
+    let single_proof_circuit = SingleProofCircuit {
+        log_n: k as usize,
+        num_proofs: 1,
+
+        vk: pk.get_vk().clone(),
+        rns_base,
+        rns_scalar,
+        transcript,
+
+        instance_commitments: vec![Some(instance_commitment)],
+        instance_evals: vec![None],
+
+        _marker: Default::default(),
+    };
+
+    let single_empty_circuit = single_proof_circuit.without_witnesses();
+
+    // 4. generate single proof vk and pk
+    let k = 25; //TODO: this is just a tmp value
+    let rng = thread_rng();
+    let public_inputs_size = 1;
+    let params = Setup::<Bn256>::new(k, rng);
+    let params_verifier = Setup::<Bn256>::verifier_params(&params, public_inputs_size).unwrap();
+
+    let vk = keygen_vk(&params, &single_empty_circuit).expect("keygen_vk should not fail");
+    let pk = keygen_pk(&params, vk, &single_empty_circuit).expect("keygen_pk should not fail");
+
+    let prover = MockProver::run(k, &circuit, vec![public_inputs.clone()]).unwrap();
+    assert_eq!(prover.verify(), Ok(()));
+
+    let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+    // Create a proof
+    create_proof(
+        &params,
+        &pk,
+        &[single_proof_circuit.clone()],
         &[&[&public_inputs[..]]],
         &mut transcript,
     ).expect("proof generation should not fail");
