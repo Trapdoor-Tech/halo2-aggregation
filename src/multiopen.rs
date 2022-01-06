@@ -43,33 +43,13 @@ where
         .collect()
 }
 
-// pub fn construct_intermediate_sets<C: CurveAffine, I, Q: Query<C::ScalarExt>>(
-//     queries: I,
-// ) -> Vec<VerifierQueriesByRotation<C, Q>>
-// where
-//     I: IntoIterator<Item = Q> + Clone,
-// {
-//     let mut point_query_map: BTreeMap<Rotation, Vec<Q>> = BTreeMap::new();
-//     for query in queries.clone() {
-//         if let Some(queries) = point_query_map.get_mut(&query.get_rotation()) {
-//             queries.push(query.clone());
-//         } else {
-//             point_query_map.insert(query.get_rotation(), vec![query.clone()]);
-//         }
-//     }
-
-//     point_query_map
-//         .keys()
-//         .map(|rot| {
-//             let queries = point_query_map.get(rot).unwrap();
-//             VerifierQueriesByRotation {
-//                 queries: queries.clone(),
-//                 rotation: rot.clone(),
-//                 _marker: PhantomData,
-//             }
-//         })
-//         .collect()
-// }
+#[derive(Debug, Clone)]
+pub struct MultiopenVar<C: CurveAffine> {
+    witness: AssignedPoint<C::ScalarExt>,
+    witness_with_aux: AssignedPoint<C::ScalarExt>,
+    commitment_multi: AssignedPoint<C::ScalarExt>,
+    eval_multi: AssignedValue<C::ScalarExt>,
+}
 
 #[derive(Debug, Clone)]
 pub struct VerifierQuery<C: CurveAffine> {
@@ -130,52 +110,36 @@ impl<C: CurveAffine, Q: Query<C::ScalarExt>> VerifierQueriesByRotation<C, Q> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct MultiopenResult<C: CurveAffine> {
-    w: AssignedPoint<C::ScalarExt>,
-    zw_lc: AssignedPoint<C::ScalarExt>,
-    e_multi: AssignedValue<C::ScalarExt>,
-}
+// /// MultiopenConfig contains all the columns needed, along with two chips which provide ecc/scalar arithmetic
+// /// This Multiopen chip use the following column layout
+// ///
+// /// | witness | witness_aux | comm_multi | eval_multi | u | u_sel | v_sel | comms | evals | z   | wi   |
+// /// | ---     | ---         | ---        | ---        | - | ---   | ---   | ---   | ---   | -   | --   |
+// /// | wit_0   | wit_aux_0   | comm_mul_0 | eval_mul_0 | u | 1     | v     | c_1_0 | e_1_0 | z_1 | wi_1 |   // for point set 1
+// /// | wit_1   | wit_aux_1   | comm_mul_1 | eval_mul_1 | u | 0     | v^2   | c_1_1 | e_1_1 | z_1 | wi_1 |
+// /// | wit_2   | wit_aux_2   | comm_mul_2 | eval_mul_2 | u | 0     | v^3   | c_1_2 | e_1_2 | z_1 | wi_1 |
+// /// | wit_3   | wit_aux_3   | comm_mul_3 | eval_mul_3 | u | 1     | v     | c_2_0 | e_2_0 | z_2 | wi_2 |   // for point set 2
+// /// | wit_4   | wit_aux_4   | comm_mul_4 | eval_mul_4 | u | 1     | v     | c_3_0 | e_3_0 | z_3 | wi_3 |   // for point set 3
+// /// | wit_5   | wit_aux_5   | comm_mul_5 | eval_mul_5 | u | 0     | v^2   | c_3_1 | e_3_1 | z_1 | wi_1 |
+// ///
+// /// Constraints (advice columns):
+// /// witness_i           = witness_{i-1} * u_sel_i * u           + witness_{i-1} * (1 - u_sel_i)         + z_i * wi_i * u_sel_i
+// /// witness_aux_i       = witness_aux_{i-1} * u_sel_i * u       + witness_aux_{i-1} * (1 - u_sel_i)     + wi_i * u_sel_i
+// /// comm_mul_i          = comm_mul_{i-1} * u_sel_i * u          + comm_mul_{i-1} * (1 - u_sel_i)        + comms_i * v_sel_i
+// /// eval_mul_i          = eval_mul_{i-1} * u_sel_i * u          + eval_mul_{i-1} * (1 - u_sel_i)        + eval_i * v_sel_i
+// /// v_sel_i             = v * u_sel_i                           + v_sel_{i-1} * (1 - u_sel_i) * v
+// ///
+// /// TODO: u_i                 = u
+// ///
+// /// u_sel is a fixed column
+// ///
+// /// TODO: comms, evals, z, wi are instance columns ??? (or read from transcript?)
+// /// TODO: did not constrain u/v from transcript
 
-impl<C: CurveAffine> MultiopenResult<C> {
-    pub fn get_w(&self) -> AssignedPoint<C::ScalarExt> {
-        self.w.clone()
-    }
-
-    pub fn get_zw(&self) -> AssignedPoint<C::ScalarExt> {
-        self.zw_lc.clone()
-    }
-
-    pub fn get_e(&self) -> AssignedValue<C::ScalarExt> {
-        self.e_multi.clone()
-    }
-}
-
-/// MultiopenConfig contains all the columns needed, along with two chips which provide ecc/scalar arithmetic
-/// This Multiopen chip use the following column layout
-///
-/// | witness | witness_aux | comm_multi | eval_multi | u | u_sel | v_sel | comms | evals | z   | wi   |
-/// | ---     | ---         | ---        | ---        | - | ---   | ---   | ---   | ---   | -   | --   |
-/// | wit_0   | wit_aux_0   | comm_mul_0 | eval_mul_0 | u | 1     | v     | c_1_0 | e_1_0 | z_1 | wi_1 |   // for point set 1
-/// | wit_1   | wit_aux_1   | comm_mul_1 | eval_mul_1 | u | 0     | v^2   | c_1_1 | e_1_1 | z_1 | wi_1 |
-/// | wit_2   | wit_aux_2   | comm_mul_2 | eval_mul_2 | u | 0     | v^3   | c_1_2 | e_1_2 | z_1 | wi_1 |
-/// | wit_3   | wit_aux_3   | comm_mul_3 | eval_mul_3 | u | 1     | v     | c_2_0 | e_2_0 | z_2 | wi_2 |   // for point set 2
-/// | wit_4   | wit_aux_4   | comm_mul_4 | eval_mul_4 | u | 1     | v     | c_3_0 | e_3_0 | z_3 | wi_3 |   // for point set 3
-/// | wit_5   | wit_aux_5   | comm_mul_5 | eval_mul_5 | u | 0     | v^2   | c_3_1 | e_3_1 | z_1 | wi_1 |
-///
-/// Constraints (advice columns):
-/// witness_i           = witness_{i-1} * u_sel_i * u           + witness_{i-1} * (1 - u_sel_i)         + z_i * wi_i * u_sel_i
-/// witness_aux_i       = witness_aux_{i-1} * u_sel_i * u       + witness_aux_{i-1} * (1 - u_sel_i)     + wi_i * u_sel_i
-/// comm_mul_i          = comm_mul_{i-1} * u_sel_i * u          + comm_mul_{i-1} * (1 - u_sel_i)        + comms_i * v_sel_i
-/// eval_mul_i          = eval_mul_{i-1} * u_sel_i * u          + eval_mul_{i-1} * (1 - u_sel_i)        + eval_i * v_sel_i
-/// v_sel_i             = v * u_sel_i                           + v_sel_{i-1} * (1 - u_sel_i) * v
-///
-/// TODO: u_i                 = u
-///
-/// u_sel is a fixed column
-///
-/// TODO: comms, evals, z, wi are instance columns ??? (or read from transcript?)
-/// TODO: did not constrain u/v from transcript
+/// MultiopenChip need to compute linear combinations of commitments/evaluations at different rotations
+/// the `x * omega/omega_inv ^ rotation` must be computed as the challenge point
+/// in order to do this, we utilize two lookup tables, one for rotation, one for omega/omega_inv at the rotation
+/// then we constrain the calculated rot/omega_evals, as two advice columns, should exist in the lookup tables
 #[derive(Debug, Clone)]
 pub struct MultiopenConfig {
     rot: Column<Advice>,
@@ -201,7 +165,6 @@ pub trait MultiopenInstructions<C: CurveAffine> {
         &self,
         layouter: &mut impl Layouter<C::ScalarExt>,
         omega_evals: &[(Rotation, C::ScalarExt)],
-        offset: &mut usize,
     ) -> Result<(), Error>;
 
     fn calc_witness(
@@ -214,7 +177,7 @@ pub trait MultiopenInstructions<C: CurveAffine> {
         u: ChallengeU<C>,
         v: ChallengeV<C>,
         offset: &mut usize,
-    ) -> Result<(), Error>;
+    ) -> Result<MultiopenVar<C>, Error>;
 }
 
 pub struct MultiopenChip<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> {
@@ -251,12 +214,11 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
     }
 
     /// use two lookup tabels for calculating `omega ^ rotation`
-    /// these two tables are loaded from circuit
+    /// these two tables should be initialized before calling `calc_witness()`
     fn lookup_table_pows(
         &self,
         layouter: &mut impl Layouter<C::ScalarExt>,
         omega_evals: &[(Rotation, C::ScalarExt)],
-        offset: &mut usize,
     ) -> Result<(), Error> {
         layouter.assign_table(
             || "Rotation table",
@@ -312,14 +274,13 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
         u: ChallengeU<C>,
         v: ChallengeV<C>,
         offset: &mut usize,
-    ) -> Result<(), Error> {
+    ) -> Result<MultiopenVar<C>, Error> {
         let ecc_chip = self.base_ecc_chip()?;
 
-        let mut rot_offset = 0;
-        let mut omega_eval_offset = 0;
+        let rot_offset = 0;
+        let omega_eval_offset = 0;
 
         // rearrange the verifier queries
-        //let queries_by_rotation = construct_intermediate_sets(queries.iter());
         let queries_by_rotation = construct_intermediate_sets::<C, _>(queries);
 
         let one = Some(C::ScalarExt::one());
@@ -342,10 +303,14 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
             offset,
         )?;
 
-        let omega_x_omega_inv =
-            ecc_chip
-                .main_gate()
-                .mul(region, circuit_omega.clone(), circuit_omega_inv.clone(), offset)?;
+        let omega_x_omega_inv = ecc_chip.main_gate().mul(
+            region,
+            circuit_omega.clone(),
+            circuit_omega_inv.clone(),
+            offset,
+        )?;
+
+        // make sure that omega * omega_inv is 1
         ecc_chip
             .main_gate()
             .assert_equal(region, one, omega_x_omega_inv, offset)?;
@@ -364,59 +329,20 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
         let circuit_u = u.value().clone();
         let circuit_v = v.value().clone();
 
-        // let circuit_x = ecc_chip.main_gate().assign_value(
-        //     region,
-        //     &Some(x.value()).into(),
-        //     MainGateColumn::A,
-        //     offset,
-        // )?;
-        // let circuit_u = ecc_chip.main_gate().assign_value(
-        //     region,
-        //     &Some(u.value()).into(),
-        //     MainGateColumn::A,
-        //     offset,
-        // )?;
-        // let circuit_v = ecc_chip.main_gate().assign_value(
-        //     region,
-        //     &Some(v.value()).into(),
-        //     MainGateColumn::A,
-        //     offset,
-        // )?;
-
-        // use cur_p to store the linear comb of zi/wi
         for queries_at_a_rotation in queries_by_rotation.iter() {
             let r = queries_at_a_rotation.get_rotation();
 
-            let r_geq_zero = if r.0 >= 0 {
-                UnassignedValue::new(Some(C::ScalarExt::one()))
-            } else {
-                UnassignedValue::new(Some(C::ScalarExt::zero()))
-            };
-            let r_geq_zero = ecc_chip.main_gate().assign_value(
-                region,
-                &r_geq_zero,
-                MainGateColumn::A,
-                offset,
-            )?;
-            let real_omega = ecc_chip.main_gate().cond_select(
-                region,
-                circuit_omega.clone(),
-                circuit_omega_inv.clone(),
-                &r_geq_zero.into(),
-                offset,
-            )?;
-
-            // we should calculate real_omega ^ r
+            // omega_eval = omega ^ |r| or omega_inv ^ |r|, depends on rotation
             let (rot, omega_eval) = if r.0 >= 0 {
                 (
                     C::ScalarExt::from_u64(r.0 as u64),
                     omega.pow(&[r.0 as u64, 0, 0, 0]),
                 )
             } else {
-                let r_inv = -r.0 as u64;
+                let r_abs = -r.0 as u64;
                 (
-                    -C::ScalarExt::from_u64(r_inv),
-                    omega_inv.pow(&[r_inv, 0, 0, 0]),
+                    -C::ScalarExt::from_u64(r_abs),
+                    omega_inv.pow(&[r_abs, 0, 0, 0]),
                 )
             };
 
@@ -435,6 +361,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
                 offset,
             )?;
 
+            // we should calculate omega_eval ^ rot
             let pow_real_omega = ecc_chip.main_gate().assign_value(
                 region,
                 &Some(omega_eval).into(),
@@ -442,22 +369,31 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
                 offset,
             )?;
 
-            let z = ecc_chip
-                .main_gate()
-                .mul(region, pow_real_omega.clone(), circuit_x.clone(), offset)?;
+            // the challenge point `z`: x * real_omega ^ rot
+            let z = ecc_chip.main_gate().mul(
+                region,
+                pow_real_omega.clone(),
+                circuit_x.clone(),
+                offset,
+            )?;
+
             let wi = self.read_comm(region, offset)?;
+
             let z_wi = ecc_chip.mul_var(region, wi.clone(), z.clone(), offset)?;
 
             witness = ecc_chip.mul_var(region, witness, circuit_u.clone(), offset)?;
             witness = ecc_chip.add(region, &witness, &wi, offset)?;
 
-            witness_with_aux = ecc_chip.mul_var(region, witness_with_aux.clone(), circuit_u.clone(), offset)?;
+            witness_with_aux =
+                ecc_chip.mul_var(region, witness_with_aux.clone(), circuit_u.clone(), offset)?;
             witness_with_aux = ecc_chip.add(region, &witness_with_aux, &z_wi, offset)?;
 
-            commitment_multi = ecc_chip.mul_var(region, commitment_multi.clone(), circuit_u.clone(), offset)?;
-            eval_multi = ecc_chip
-                .main_gate()
-                .mul(region, eval_multi.clone(), circuit_u.clone(), offset)?;
+            commitment_multi =
+                ecc_chip.mul_var(region, commitment_multi.clone(), circuit_u.clone(), offset)?;
+            eval_multi =
+                ecc_chip
+                    .main_gate()
+                    .mul(region, eval_multi.clone(), circuit_u.clone(), offset)?;
 
             let mut commitment_batch =
                 ecc_chip.assign_point(region, Some(C::identity()), offset)?;
@@ -489,11 +425,19 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
                     .main_gate()
                     .assert_equal(region, r.clone(), query_rot, offset)?;
 
-                commitment_batch = ecc_chip.mul_var(region, commitment_batch.clone(), circuit_v.clone(), offset)?;
+                commitment_batch = ecc_chip.mul_var(
+                    region,
+                    commitment_batch.clone(),
+                    circuit_v.clone(),
+                    offset,
+                )?;
 
-                eval_batch = ecc_chip
-                    .main_gate()
-                    .mul(region, eval_batch.clone(), circuit_v.clone(), offset)?;
+                eval_batch = ecc_chip.main_gate().mul(
+                    region,
+                    eval_batch.clone(),
+                    circuit_v.clone(),
+                    offset,
+                )?;
 
                 let comm = query.get_comm();
                 let eval = query.get_eval();
@@ -509,8 +453,14 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
                 .add(region, eval_multi, eval_batch, offset)?;
         }
 
-        // TODO: should return the computed result
-        Ok(())
+        let result = MultiopenVar {
+            witness,
+            witness_with_aux,
+            commitment_multi,
+            eval_multi,
+        };
+
+        Ok(result)
     }
 }
 
