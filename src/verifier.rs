@@ -602,6 +602,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         let zw = multiopen_var.zw;
         let f = multiopen_var.f;
         let e = multiopen_var.e;
+        // TODO: assert (w, zw, f, e) equal to their public input counterparts.
 
         let ret =
             self.ecc_chip
