@@ -1,8 +1,18 @@
-use halo2::arithmetic::CurveAffine;
+use halo2::arithmetic::{CurveAffine, Field, FieldExt};
 use halo2::circuit::Region;
+use halo2::plonk::Advice;
+use halo2::plonk::{Column, ConstraintSystem, Error, TableColumn};
 use halo2wrong::circuit::ecc::AssignedPoint;
+use halo2wrong::circuit::Assigned;
 use halo2wrong::circuit::AssignedValue;
+use halo2wrong::rns::big_to_fe;
+use halo2wrong::rns::Common;
+use std::io::Write;
 use std::marker::PhantomData;
+
+use halo2::transcript::{
+    Blake2bWrite, Challenge255, EncodedChallenge, Transcript, TranscriptWrite,
+};
 
 #[derive(Clone, Debug)]
 pub struct ChallengeScalarVar<C: CurveAffine, T> {
@@ -16,24 +26,108 @@ impl<C: CurveAffine, T> ChallengeScalarVar<C, T> {
     }
 }
 
-pub trait TranscriptChip<C: CurveAffine> {
+pub trait TranscriptInstructions<C: CurveAffine> {
     fn squeeze_challenge_scalar<T>(
         &mut self,
         region: &mut Region<'_, C::ScalarExt>,
         offset: &mut usize,
-    ) -> ChallengeScalarVar<C, T>;
+    ) -> Result<ChallengeScalarVar<C, T>, Error>;
 
     fn common_point(
         &mut self,
         region: &mut Region<'_, C::ScalarExt>,
         point: AssignedPoint<C::ScalarExt>,
         offset: &mut usize,
-    );
+    ) -> Result<(), Error>;
 
     fn common_scalar(
         &mut self,
         region: &mut Region<'_, C::ScalarExt>,
         scalar: AssignedValue<C::ScalarExt>,
         offset: &mut usize,
-    );
+    ) -> Result<(), Error>;
+}
+
+pub struct TranscriptConfig {
+    c: Column<Advice>,
+}
+
+pub struct TranscriptChip<C: CurveAffine, E: EncodedChallenge<C>> {
+    config: TranscriptConfig,
+    transcript: Blake2bWrite<Vec<u8>, C, Challenge255<C>>,
+    _marker: PhantomData<E>,
+}
+
+/// USE THIS CHIP WITH CAUTION!
+///
+/// This chip is not finished. In order to comply with other parts of the verifier, this chip calls `blake2b` and assigns
+/// the result into a challengeVar. No constraint is made.
+impl<C: CurveAffine, E: EncodedChallenge<C>> TranscriptInstructions<C> for TranscriptChip<C, E> {
+    fn squeeze_challenge_scalar<T>(
+        &mut self,
+        region: &mut Region<'_, C::ScalarExt>,
+        offset: &mut usize,
+    ) -> Result<ChallengeScalarVar<C, T>, Error> {
+        let c = self.transcript.squeeze_challenge().get_scalar();
+
+        let circuit_c = region.assign_advice(|| "challenge", self.config.c, *offset, || Ok(c))?;
+
+        let assigned_c = AssignedValue::new(circuit_c, Some(c));
+
+        let result = ChallengeScalarVar {
+            inner: assigned_c,
+            _marker: PhantomData,
+        };
+
+        Ok(result)
+    }
+
+    fn common_point(
+        &mut self,
+        region: &mut Region<'_, C::ScalarExt>,
+        point: AssignedPoint<C::ScalarExt>,
+        offset: &mut usize,
+    ) -> Result<(), Error> {
+        let x = big_to_fe::<C::Base>(point.x.integer().ok_or(Error::TranscriptError)?.value());
+        let y = big_to_fe::<C::Base>(point.y.integer().ok_or(Error::TranscriptError)?.value());
+
+        let p: Option<_> = C::from_xy(x, y).into();
+        let p = p.ok_or(Error::TranscriptError)?;
+
+        self.transcript.write_point(p).map_err(|_| Error::TranscriptError)?;
+
+        Ok(())
+    }
+
+    fn common_scalar(
+        &mut self,
+        region: &mut Region<'_, C::ScalarExt>,
+        scalar: AssignedValue<C::ScalarExt>,
+        offset: &mut usize,
+    ) -> Result<(), Error> {
+        let v = scalar.value().ok_or(Error::TranscriptError)?;
+
+        self.transcript.write_scalar(v).map_err(|_| Error::TranscriptError)?;
+
+        Ok(())
+    }
+}
+
+impl<C: CurveAffine, E: EncodedChallenge<C>> TranscriptChip<C, E> {
+    fn new(config: TranscriptConfig) -> Self {
+        let mut transcript = Blake2bWrite::<_, C, Challenge255<C>>::init(vec![]);
+
+        Self {
+            config,
+            transcript,
+            _marker: PhantomData,
+        }
+    }
+
+    /// CAUTION: NO CONSTRAINT YET!
+    fn configure(meta: &mut ConstraintSystem<C::ScalarExt>) -> TranscriptConfig {
+        let c = meta.advice_column();
+
+        TranscriptConfig { c }
+    }
 }
