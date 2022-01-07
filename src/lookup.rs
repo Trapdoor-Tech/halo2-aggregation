@@ -1,5 +1,6 @@
 use crate::multiopen::VerifierQuery;
-use crate::transcript::{TranscriptChip, TranscriptInstruction};
+use crate::transcript::TranscriptChip;
+use crate::transcript::TranscriptInstructions;
 use crate::verifier::compute_expr;
 use crate::{ChallengeBeta, ChallengeGamma, ChallengeTheta};
 use halo2::arithmetic::{CurveAffine, Field, FieldExt};

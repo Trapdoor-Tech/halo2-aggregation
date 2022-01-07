@@ -1,7 +1,7 @@
 use crate::lookup::{CommittedVar, EvaluatedVar, LookupChip};
 use crate::multiopen::{MultiopenChip, MultiopenConfig, MultiopenInstructions, VerifierQuery};
 use crate::permutation::PermutationChip;
-use crate::transcript::{TranscriptChip, TranscriptInstruction};
+use crate::transcript::{TranscriptChip, TranscriptConfig, TranscriptInstructions};
 use crate::vanishing::VanishingChip;
 use crate::{Beta, Gamma, Theta, U, V, X, Y};
 use blake2b_simd::Params as Blake2bParams;
@@ -27,6 +27,7 @@ use std::marker::PhantomData;
 use std::ops::MulAssign;
 
 pub struct VerifierConfig<C: CurveAffine> {
+    transcript_config: TranscriptConfig,
     multiopen_config: MultiopenConfig,
     base_ecc_config: EccConfig,
     rns: Rns<C::Base, C::ScalarExt>,
@@ -152,7 +153,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             perm: PermutationChip::new(ecc_chip.clone()),
             vanishing: VanishingChip::new(ecc_chip.clone()),
             transcript,
-            transcript_chip: TranscriptChip::new(),
+            transcript_chip: TranscriptChip::new(config.transcript_config),
             multiopen_chip: MultiopenChip::new(
                 config.multiopen_config,
                 config.base_ecc_config,
@@ -168,8 +169,9 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         let rns = Rns::<C::Base, C::ScalarExt>::construct(64);
         let base_ecc_config =
             BaseFieldEccChip::<C>::configure(meta, main_gate_config.clone(), vec![], rns.clone());
-
+        let transcript_config = TranscriptChip::<C>::configure(meta);
         VerifierConfig {
+            transcript_config,
             multiopen_config,
             base_ecc_config,
             rns,
@@ -256,7 +258,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             transcript_chip.common_point(region, comm, offset);
         }
 
-        let theta = transcript_chip.squeeze_challenge_scalar::<Theta>(region, offset);
+        let theta = transcript_chip.squeeze_challenge_scalar::<Theta>(region, offset)?;
 
         // hash each lookup permuted commitments into transcript
         let mut lookups_permuted = vec![];
@@ -268,10 +270,10 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         }
 
         // sample beta challenge
-        let beta = transcript_chip.squeeze_challenge_scalar::<Beta>(region, offset);
+        let beta = transcript_chip.squeeze_challenge_scalar::<Beta>(region, offset)?;
 
         // sample gamma challenge
-        let gamma = transcript_chip.squeeze_challenge_scalar::<Gamma>(region, offset);
+        let gamma = transcript_chip.squeeze_challenge_scalar::<Gamma>(region, offset)?;
 
         // { zp_i }
         let permutations_committed = self.perm.alloc_cv(
@@ -295,7 +297,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             self.vanishing
                 .alloc_before_y(&mut self.transcript, transcript_chip, region, offset)?;
 
-        let y = transcript_chip.squeeze_challenge_scalar::<Y>(region, offset);
+        let y = transcript_chip.squeeze_challenge_scalar::<Y>(region, offset)?;
 
         let vanishing = self.vanishing.alloc_after_y(
             &mut self.transcript,
@@ -306,7 +308,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             offset,
         )?;
 
-        let x = transcript_chip.squeeze_challenge_scalar::<X>(region, offset);
+        let x = transcript_chip.squeeze_challenge_scalar::<X>(region, offset)?;
 
         let mut inst_evals = vec![];
         for _ in 0..inst_comms.len() {
@@ -582,8 +584,8 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         };
 
         // TODO: use MultiOpenChip to verify these queries
-        let v = transcript_chip.squeeze_challenge_scalar::<V>(region, offset);
-        let u = transcript_chip.squeeze_challenge_scalar::<U>(region, offset);
+        let v = transcript_chip.squeeze_challenge_scalar::<V>(region, offset)?;
+        let u = transcript_chip.squeeze_challenge_scalar::<U>(region, offset)?;
 
         let omega_inv = omega.invert().unwrap();
         let multiopen_var = self.multiopen_chip.calc_witness(

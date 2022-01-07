@@ -1,5 +1,5 @@
 use crate::multiopen::VerifierQuery;
-use crate::transcript::{TranscriptChip, TranscriptInstruction};
+use crate::transcript::{TranscriptChip, TranscriptInstructions};
 use crate::ChallengeY;
 use halo2::arithmetic::{CurveAffine, Field};
 use halo2::circuit::Region;
