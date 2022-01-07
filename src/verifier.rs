@@ -1,27 +1,36 @@
 use crate::lookup::{CommittedVar, EvaluatedVar, LookupChip};
-use crate::multiopen::VerifierQuery;
+use crate::multiopen::{MultiopenChip, MultiopenConfig, MultiopenInstructions, VerifierQuery};
 use crate::permutation::PermutationChip;
 use crate::transcript::{TranscriptChip, TranscriptInstruction};
 use crate::vanishing::VanishingChip;
-use crate::{Beta, Gamma, Theta, X, Y};
+use crate::{Beta, Gamma, Theta, U, V, X, Y};
 use blake2b_simd::Params as Blake2bParams;
 use halo2::arithmetic::FieldExt;
 use halo2::arithmetic::{CurveAffine, Field};
 use halo2::circuit::Region;
 use halo2::plonk::Error::TranscriptError;
 use halo2::plonk::{
-    Advice, Any, Column, Error, Expression, Fixed, Instance, PinnedVerificationKey, VerifyingKey,
+    Advice, Any, Column, ConstraintSystem, Error, Expression, Fixed, Instance,
+    PinnedVerificationKey, VerifyingKey,
 };
 use halo2::poly::Rotation;
 use halo2::transcript::{EncodedChallenge, TranscriptRead};
 use halo2wrong::circuit::ecc::base_field_ecc::{BaseFieldEccChip, BaseFieldEccInstruction};
+use halo2wrong::circuit::ecc::EccConfig;
 use halo2wrong::circuit::main_gate::{
     CombinationOption, MainGate, MainGateColumn, MainGateInstructions, Term,
 };
 use halo2wrong::circuit::{Assigned, AssignedCondition, AssignedValue};
+use halo2wrong::rns::Rns;
 use std::fmt::format;
 use std::marker::PhantomData;
 use std::ops::MulAssign;
+
+pub struct VerifierConfig<C: CurveAffine> {
+    multiopen_config: MultiopenConfig,
+    base_ecc_config: EccConfig,
+    rns: Rns<C::Base, C::ScalarExt>,
+}
 
 pub struct VerifierChip<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> {
     ecc_chip: BaseFieldEccChip<C>,
@@ -30,6 +39,7 @@ pub struct VerifierChip<'a, C: CurveAffine, E: EncodedChallenge<C>, T: Transcrip
     vanishing: VanishingChip<C>,
     transcript: Option<&'a mut T>,
     transcript_chip: TranscriptChip<C>,
+    multiopen_chip: MultiopenChip<C>,
     _marker: PhantomData<E>,
 }
 
@@ -131,7 +141,11 @@ pub(crate) fn compute_expr<C: CurveAffine>(
 impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
     VerifierChip<'a, C, E, T>
 {
-    pub fn new(ecc_chip: BaseFieldEccChip<C>, transcript: Option<&'a mut T>) -> Self {
+    pub fn new(
+        ecc_chip: BaseFieldEccChip<C>,
+        config: VerifierConfig<C>,
+        transcript: Option<&'a mut T>,
+    ) -> Self {
         Self {
             ecc_chip: ecc_chip.clone(),
             lookup: LookupChip::new(ecc_chip.clone()),
@@ -139,7 +153,26 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             vanishing: VanishingChip::new(ecc_chip.clone()),
             transcript,
             transcript_chip: TranscriptChip::new(),
+            multiopen_chip: MultiopenChip::new(
+                config.multiopen_config,
+                config.base_ecc_config,
+                config.rns,
+            ),
             _marker: Default::default(),
+        }
+    }
+
+    pub fn configure(meta: &mut ConstraintSystem<C::ScalarExt>) -> VerifierConfig<C> {
+        let main_gate_config = MainGate::configure(meta);
+        let multiopen_config = MultiopenChip::<C>::configure(meta);
+        let rns = Rns::<C::Base, C::ScalarExt>::construct(64);
+        let base_ecc_config =
+            BaseFieldEccChip::<C>::configure(meta, main_gate_config.clone(), vec![], rns.clone());
+
+        VerifierConfig {
+            multiopen_config,
+            base_ecc_config,
+            rns,
         }
     }
 
@@ -155,6 +188,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         perm_num_columns: usize,
         perm_chunk_len: usize,
         omega: C::ScalarExt,
+        g1: C,
         input_expressions: Vec<Expression<C::ScalarExt>>,
         table_expressions: Vec<Expression<C::ScalarExt>>,
         gates: Vec<Expression<C::ScalarExt>>,
@@ -548,6 +582,26 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         };
 
         // TODO: use MultiOpenChip to verify these queries
+        let v = transcript_chip.squeeze_challenge_scalar::<V>(region, offset);
+        let u = transcript_chip.squeeze_challenge_scalar::<U>(region, offset);
+
+        let omega_inv = omega.invert().unwrap();
+        let multiopen_var = self.multiopen_chip.calc_witness(
+            &mut self.transcript,
+            region,
+            &queries,
+            &omega,
+            &omega_inv,
+            &g1,
+            x,
+            u,
+            v,
+            offset,
+        )?;
+        let w = multiopen_var.w;
+        let zw = multiopen_var.zw;
+        let f = multiopen_var.f;
+        let e = multiopen_var.e;
 
         let ret =
             self.ecc_chip

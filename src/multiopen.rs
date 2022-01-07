@@ -1,3 +1,4 @@
+use crate::transcript::TranscriptChip;
 use crate::{ChallengeU, ChallengeV, ChallengeX};
 use halo2::arithmetic::{CurveAffine, Field, FieldExt};
 use halo2::circuit::Layouter;
@@ -45,10 +46,10 @@ where
 
 #[derive(Debug, Clone)]
 pub struct MultiopenVar<C: CurveAffine> {
-    w: AssignedPoint<C::ScalarExt>,
-    zw: AssignedPoint<C::ScalarExt>,
-    f: AssignedPoint<C::ScalarExt>,
-    e: AssignedPoint<C::ScalarExt>,
+    pub w: AssignedPoint<C::ScalarExt>,
+    pub zw: AssignedPoint<C::ScalarExt>,
+    pub f: AssignedPoint<C::ScalarExt>,
+    pub e: AssignedPoint<C::ScalarExt>,
 }
 
 #[derive(Debug, Clone)]
@@ -151,12 +152,14 @@ pub struct MultiopenConfig {
 
 /// Instructions should be able to compute and fill in witnesses
 /// in order to do linear combination of commitments, we use `BaseFieldEccInstruction` from `halo2wrong`
-pub trait MultiopenInstructions<C: CurveAffine> {
+pub trait MultiopenInstructions<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
+{
     type Comm;
     type Eval;
 
     fn read_comm(
         &mut self,
+        transcript: &mut Option<&mut T>,
         region: &mut Region<'_, C::ScalarExt>,
         offset: &mut usize,
     ) -> Result<Self::Comm, Error>;
@@ -169,6 +172,7 @@ pub trait MultiopenInstructions<C: CurveAffine> {
 
     fn calc_witness(
         &mut self,
+        transcript: &mut Option<&mut T>,
         region: &mut Region<'_, C::ScalarExt>,
         queries: &[VerifierQuery<C>],
         omega: &C::ScalarExt,
@@ -181,28 +185,27 @@ pub trait MultiopenInstructions<C: CurveAffine> {
     ) -> Result<MultiopenVar<C>, Error>;
 }
 
-pub struct MultiopenChip<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> {
+pub struct MultiopenChip<C: CurveAffine> {
     config: MultiopenConfig,
-    transcript: Option<&'a mut T>,
 
     // chip to do mul/add arithmetics on commitments/evals
     base_ecc_config: EccConfig,
     rns: Rns<C::Base, C::ScalarExt>,
-    _marker: PhantomData<E>,
 }
 
-impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> MultiopenInstructions<C>
-    for MultiopenChip<'a, C, E, T>
+impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
+    MultiopenInstructions<'_, C, E, T> for MultiopenChip<C>
 {
     type Comm = AssignedPoint<C::ScalarExt>;
     type Eval = AssignedValue<C::ScalarExt>;
 
     fn read_comm(
         &mut self,
+        transcript: &mut Option<&mut T>,
         region: &mut Region<'_, C::ScalarExt>,
         offset: &mut usize,
     ) -> Result<Self::Comm, Error> {
-        let point = match self.transcript.as_mut() {
+        let point = match transcript.as_mut() {
             None => return Err(Error::TranscriptError),
             Some(t) => t.read_point().map_err(|_| Error::TranscriptError)?,
         };
@@ -267,6 +270,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
     /// eval_mul_i = eval_mul_{i-1} * u_sel_i * u + eval_mul_{i-1} * (1 - u_sel_i) + eval_i * v_sel_i
     fn calc_witness(
         &mut self,
+        transcript: &mut Option<&mut T>,
         region: &mut Region<'_, C::ScalarExt>,
         queries: &[VerifierQuery<C>],
         omega: &C::ScalarExt,
@@ -379,7 +383,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
                 offset,
             )?;
 
-            let wi = self.read_comm(region, offset)?;
+            let wi = self.read_comm(transcript, region, offset)?;
 
             let z_wi = ecc_chip.mul_var(region, wi.clone(), z.clone(), offset)?;
 
@@ -469,9 +473,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Multio
     }
 }
 
-impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Chip<C::ScalarExt>
-    for MultiopenChip<'a, C, E, T>
-{
+impl<'a, C: CurveAffine> Chip<C::ScalarExt> for MultiopenChip<C> {
     type Config = MultiopenConfig;
     type Loaded = ();
 
@@ -485,20 +487,16 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> Chip<C
 }
 
 /// To simplify MSM computation, we calculate every commitment/eval while accumulating
-impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
-    MultiopenChip<'a, C, E, T>
-{
-    fn new(
+impl<'a, C: CurveAffine> MultiopenChip<C> {
+    pub fn new(
         config: MultiopenConfig,
         base_ecc_config: EccConfig,
         rns: Rns<C::Base, C::ScalarExt>,
     ) -> Self {
         Self {
             config,
-            transcript: None,
             base_ecc_config,
             rns,
-            _marker: PhantomData,
         }
     }
 
@@ -508,7 +506,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         BaseFieldEccChip::<C>::new(base_ecc_config, rns)
     }
 
-    fn configure(meta: &mut ConstraintSystem<C::ScalarExt>) -> MultiopenConfig {
+    pub fn configure(meta: &mut ConstraintSystem<C::ScalarExt>) -> MultiopenConfig {
         let rot = meta.advice_column();
         let omega_evals = meta.advice_column();
         let t_rot = meta.lookup_table_column();
@@ -516,12 +514,8 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
 
         meta.lookup(|meta| {
             let a = meta.query_any(rot.into(), Rotation::cur());
-            vec![(a, t_rot)]
-        });
-
-        meta.lookup(|meta| {
             let b = meta.query_any(omega_evals.into(), Rotation::cur());
-            vec![(b, t_omega_evals)]
+            vec![(a, t_rot), (b, t_omega_evals)]
         });
 
         MultiopenConfig {
