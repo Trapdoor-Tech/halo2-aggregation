@@ -1,6 +1,6 @@
 use crate::transcript::TranscriptChip;
 use crate::{ChallengeU, ChallengeV, ChallengeX};
-use halo2::arithmetic::{CurveAffine, Field, FieldExt};
+use halo2::arithmetic::{BaseExt, CurveAffine, Field, FieldExt};
 use halo2::circuit::Layouter;
 use halo2::circuit::{Chip, Region};
 use halo2::plonk::Advice;
@@ -206,13 +206,13 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         offset: &mut usize,
     ) -> Result<Self::Comm, Error> {
         let point = match transcript.as_mut() {
-            None => return Err(Error::TranscriptError),
-            Some(t) => t.read_point().map_err(|_| Error::TranscriptError)?,
+            None => None,
+            Some(t) => Some(t.read_point().map_err(|e| Error::Transcript(e))?),
         };
 
         let ecc_chip = self.base_ecc_chip()?;
 
-        let p = ecc_chip.assign_point(region, Some(point), offset)?;
+        let p = ecc_chip.assign_point(region, point, offset)?;
 
         Ok(p)
     }
@@ -232,10 +232,10 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
 
                     let rot = if r.0 >= 0 {
                         let r = r.0 as u64;
-                        C::ScalarExt::from_u64(r)
+                        C::ScalarExt::from_u128(r as u128)
                     } else {
                         let r_inv = -r.0 as u64;
-                        -C::ScalarExt::from_u64(r_inv)
+                        -C::ScalarExt::from_u128(r_inv as u128)
                     };
 
                     table.assign_cell(|| "table col", self.config.t_rot, index, || Ok(rot))?;
@@ -341,13 +341,13 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             // omega_eval = omega ^ |r| or omega_inv ^ |r|, depends on rotation
             let (rot, omega_eval) = if r.0 >= 0 {
                 (
-                    C::ScalarExt::from_u64(r.0 as u64),
+                    C::ScalarExt::from_u128(r.0 as u128),
                     omega.pow(&[r.0 as u64, 0, 0, 0]),
                 )
             } else {
                 let r_abs = -r.0 as u64;
                 (
-                    -C::ScalarExt::from_u64(r_abs),
+                    -C::ScalarExt::from_u128(r_abs as u128),
                     omega_inv.pow(&[r_abs, 0, 0, 0]),
                 )
             };
@@ -413,10 +413,10 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             for query in queries_at_a_rotation.queries.iter() {
                 let query_rot = query.get_rotation().0;
                 let query_rot = if query_rot >= 0 {
-                    C::ScalarExt::from_u64(query_rot as u64)
+                    C::ScalarExt::from_u128(query_rot as u128)
                 } else {
-                    let query_rot_inv = -query_rot as u64;
-                    -C::ScalarExt::from_u64(query_rot_inv)
+                    let query_rot_inv = -query_rot as u128;
+                    -C::ScalarExt::from_u128(query_rot_inv)
                 };
 
                 let query_rot = ecc_chip.main_gate().assign_value(

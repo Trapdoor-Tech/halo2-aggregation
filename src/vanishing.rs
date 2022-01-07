@@ -5,7 +5,7 @@ use halo2::arithmetic::{CurveAffine, Field};
 use halo2::circuit::Region;
 use halo2::plonk::Assigned::Zero;
 use halo2::plonk::Error;
-use halo2::plonk::Error::TranscriptError;
+use halo2::plonk::Error::Transcript as TranscriptError;
 use halo2::poly::Rotation;
 use halo2::transcript::{EncodedChallenge, TranscriptRead};
 use halo2wrong::circuit::ecc::base_field_ecc::{BaseFieldEccChip, BaseFieldEccInstruction};
@@ -64,7 +64,7 @@ impl<C: CurveAffine> VanishingChip<C> {
     {
         let r = match transcript.as_mut() {
             None => None,
-            Some(t) => Some(t.read_point().map_err(|_| TranscriptError)?),
+            Some(t) => Some(t.read_point().map_err(|e| TranscriptError(e))?),
         };
 
         let r = self.ecc_chip.assign_point(region, r, offset)?;
@@ -91,7 +91,7 @@ impl<C: CurveAffine> VanishingChip<C> {
         for i in (0..n).into_iter() {
             let h = match transcript.as_mut() {
                 None => None,
-                Some(t) => Some(t.read_point().map_err(|_| TranscriptError)?),
+                Some(t) => Some(t.read_point().map_err(|e| TranscriptError(e))?),
             };
 
             let point = self.ecc_chip.assign_point(region, h, offset)?;
@@ -119,7 +119,7 @@ impl<C: CurveAffine> VanishingChip<C> {
     {
         let r_eval = match transcript.as_mut() {
             None => None,
-            Some(t) => Some(t.read_scalar().map_err(|_| TranscriptError)?),
+            Some(t) => Some(t.read_scalar().map_err(|e| TranscriptError(e))?),
         };
 
         let main_gate = self.ecc_chip.main_gate();

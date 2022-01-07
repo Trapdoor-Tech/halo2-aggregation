@@ -88,15 +88,22 @@ impl<C: CurveAffine> TranscriptInstructions<C> for TranscriptChip<C> {
         point: AssignedPoint<C::ScalarExt>,
         offset: &mut usize,
     ) -> Result<(), Error> {
-        let x = big_to_fe::<C::Base>(point.x().integer().ok_or(Error::TranscriptError)?.value());
-        let y = big_to_fe::<C::Base>(point.y().integer().ok_or(Error::TranscriptError)?.value());
+        let p = point.x().integer().zip(point.y().integer()).map(|(x, y)| {
+            let (x, y) = (
+                big_to_fe::<C::Base>(x.value()),
+                big_to_fe::<C::Base>(y.value()),
+            );
+            let p: Option<_> = C::from_xy(x, y).into();
+            p
+        });
 
-        let p: Option<_> = C::from_xy(x, y).into();
-        let p = p.ok_or(Error::TranscriptError)?;
-
-        self.transcript
-            .write_point(p)
-            .map_err(|_| Error::TranscriptError)?;
+        if p.is_some() {
+            // do computation only when proving
+            let p = p.unwrap().ok_or(Error::Synthesis)?;
+            self.transcript
+                .write_point(p)
+                .map_err(|e| Error::Transcript(e))?;
+        }
 
         Ok(())
     }
@@ -107,11 +114,13 @@ impl<C: CurveAffine> TranscriptInstructions<C> for TranscriptChip<C> {
         scalar: AssignedValue<C::ScalarExt>,
         offset: &mut usize,
     ) -> Result<(), Error> {
-        let v = scalar.value().ok_or(Error::TranscriptError)?;
-
-        self.transcript
-            .write_scalar(v)
-            .map_err(|_| Error::TranscriptError)?;
+        let v = scalar.value();
+        if v.is_some() {
+            let v = v.unwrap();
+            self.transcript
+                .write_scalar(v)
+                .map_err(|e| Error::Transcript(e))?;
+        }
 
         Ok(())
     }
