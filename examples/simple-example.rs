@@ -1,24 +1,26 @@
 use std::marker::PhantomData;
 
+use halo2::arithmetic::CurveAffine;
+use halo2::pairing::bn256::Bn256;
+use halo2::pairing::group::Curve;
+use halo2::plonk::{create_proof, keygen_pk, keygen_vk, verify_proof, VerifyingKey};
+use halo2::poly::commitment::Setup;
+use halo2::transcript::{
+    Blake2bRead, Blake2bWrite, Challenge255, EncodedChallenge, TranscriptRead,
+};
 use halo2::{
     arithmetic::FieldExt,
     circuit::{Cell, Chip, Layouter, Region, SimpleFloorPlanner},
     plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Fixed, Instance, Selector},
     poly::Rotation,
 };
-use halo2::plonk::{keygen_vk, keygen_pk, create_proof, verify_proof, VerifyingKey};
-use halo2::poly::commitment::Setup;
-use pairing::bn256::Bn256;
-use rand::thread_rng;
-use halo2::transcript::{Blake2bWrite, Challenge255, Blake2bRead, TranscriptRead, EncodedChallenge};
-use halo2wrong::circuit::main_gate::{MainGateConfig, MainGate};
-use halo2::arithmetic::CurveAffine;
+use halo2_aggregation::{VerifierChip, VerifierConfig};
+use halo2wrong::circuit::ecc::base_field_ecc::BaseFieldEccChip;
 use halo2wrong::circuit::ecc::EccConfig;
+use halo2wrong::circuit::main_gate::{MainGate, MainGateConfig};
 use halo2wrong::circuit::range::RangeChip;
 use halo2wrong::rns::Rns;
-use halo2wrong::circuit::ecc::base_field_ecc::BaseFieldEccChip;
-use halo2_aggregation::VerifierChip;
-use pairing::group::Curve;
+use rand::thread_rng;
 use std::io::Read;
 
 // ANCHOR: instructions
@@ -365,8 +367,8 @@ const BIT_LEN_LIMB: usize = 68;
 const NUMBER_OF_LOOKUP_LIMBS: usize = 4;
 
 #[derive(Clone, Debug)]
-struct SingleProofConfig {
-    ecc_config: EccConfig
+struct SingleProofConfig<C: CurveAffine> {
+    verifier_config: VerifierConfig<C>,
 }
 
 fn rns<C: CurveAffine, N: FieldExt>() -> (Rns<C::Base, N>, Rns<C::ScalarExt, N>) {
@@ -375,53 +377,68 @@ fn rns<C: CurveAffine, N: FieldExt>() -> (Rns<C::Base, N>, Rns<C::ScalarExt, N>)
     (rns_base, rns_scalar)
 }
 
-fn setup<C: CurveAffine, N: FieldExt>(k_override: u32) -> (Rns<C::Base, N>, Rns<C::ScalarExt, N>, u32) {
+fn setup<C: CurveAffine, N: FieldExt>(
+    k_override: u32,
+) -> (Rns<C::Base, N>, Rns<C::ScalarExt, N>, u32) {
     let (rns_base, rns_scalar) = rns::<C, N>();
     let bit_len_lookup = BIT_LEN_LIMB / NUMBER_OF_LOOKUP_LIMBS;
     #[cfg(not(feature = "no_lookup"))]
-        let mut k: u32 = (bit_len_lookup + 1) as u32;
+    let mut k: u32 = (bit_len_lookup + 1) as u32;
     #[cfg(feature = "no_lookup")]
-        let mut k: u32 = 8;
+    let mut k: u32 = 8;
     if k_override != 0 {
         k = k_override;
     }
     (rns_base, rns_scalar, k)
 }
 
-impl SingleProofConfig {
-    fn new<C: CurveAffine, N: FieldExt>(meta: &mut ConstraintSystem<N>) -> Self {
-        let main_gate_config = MainGate::<N>::configure(meta);
+// impl SingleProofConfig {
+// fn new<C: CurveAffine, N: FieldExt>(meta: &mut ConstraintSystem<N>) -> Self {
+//     let main_gate_config = MainGate::<N>::configure(meta);
+//
+//     let (rns_base, rns_scalar) = rns::<C, N>();
+//
+//     let mut overflow_bit_lengths: Vec<usize> = vec![];
+//     overflow_bit_lengths.extend(rns_base.overflow_lengths());
+//     overflow_bit_lengths.extend(rns_scalar.overflow_lengths());
+//
+//     let range_config = RangeChip::<N>::configure(meta, &main_gate_config, overflow_bit_lengths);
+//
+//     Self {
+//         ecc_config: EccConfig::new(main_gate_config, range_config),
+//     }
+// }
+// }
 
-        let (rns_base, rns_scalar) = rns::<C, N>();
-
-        let mut overflow_bit_lengths: Vec<usize> = vec![];
-        overflow_bit_lengths.extend(rns_base.overflow_lengths());
-        overflow_bit_lengths.extend(rns_scalar.overflow_lengths());
-
-        let range_config = RangeChip::<N>::configure(meta, &main_gate_config, overflow_bit_lengths);
-
-        Self {
-            ecc_config: EccConfig::new(main_gate_config, range_config),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct SingleProofCircuit<C: CurveAffine, N: FieldExt, E: EncodedChallenge<C>, T: TranscriptRead<C, E>> {
+#[derive(Clone, Debug)]
+struct SingleProofCircuit<
+    'a,
+    C: CurveAffine,
+    N: FieldExt,
+    E: EncodedChallenge<C>,
+    T: TranscriptRead<C, E> + Clone,
+> {
     log_n: usize,
     num_proofs: usize,
-    vk: VerifyingKey<C>,
+    vk: &'a VerifyingKey<C>,
     rns_base: Rns<C::Base, N>,
     rns_scalar: Rns<C::ScalarExt, N>,
-    transcript: T,
+    transcript: Option<T>,
 
     instance_commitments: Vec<Option<C>>,
     instance_evals: Vec<Option<C::ScalarExt>>,
     _marker: PhantomData<E>,
 }
 
-impl<C: CurveAffine + CurveAffine<ScalarExt = N>, N: FieldExt, E: EncodedChallenge<C>, T: Clone + TranscriptRead<C, E>> Circuit<N> for SingleProofCircuit<C, N, E, T> {
-    type Config = SingleProofConfig;
+impl<
+        'a,
+        C: CurveAffine + CurveAffine<ScalarExt = N>,
+        N: FieldExt,
+        E: EncodedChallenge<C>,
+        T: 'a + Clone + TranscriptRead<C, E>,
+    > Circuit<N> for SingleProofCircuit<'a, C, N, E, T>
+{
+    type Config = SingleProofConfig<C>;
     type FloorPlanner = SimpleFloorPlanner;
 
     fn without_witnesses(&self) -> Self {
@@ -431,7 +448,8 @@ impl<C: CurveAffine + CurveAffine<ScalarExt = N>, N: FieldExt, E: EncodedChallen
             vk: self.vk.clone(),
             rns_base: self.rns_base.clone(),
             rns_scalar: self.rns_scalar.clone(),
-            transcript: self.transcript.clone(),
+            // transcript: self.transcript.clone(),
+            transcript: None,
 
             instance_commitments: vec![None],
             instance_evals: vec![None],
@@ -440,29 +458,33 @@ impl<C: CurveAffine + CurveAffine<ScalarExt = N>, N: FieldExt, E: EncodedChallen
     }
 
     fn configure(meta: &mut ConstraintSystem<N>) -> Self::Config {
-        SingleProofConfig::new::<C, N>(meta)
+        let verifier_config = VerifierChip::<'a, C, E, T>::configure(meta, BIT_LEN_LIMB);
+        Self::Config { verifier_config }
     }
 
-    fn synthesize(&self, config: Self::Config, mut layouter: impl Layouter<N>) -> Result<(), Error> {
-        let ecc_chip = BaseFieldEccChip::<C>::new(config.ecc_config.clone(), self.rns_base.clone())?;
-
+    fn synthesize(
+        &self,
+        config: Self::Config,
+        mut layouter: impl Layouter<N>,
+    ) -> Result<(), Error> {
         let mut transcript = self.transcript.clone();
 
         // TODO: transcript will be replace when it is finished
-        let mut verifier_chip = VerifierChip::<C, E, T>::new(ecc_chip, Some(&mut transcript));
+        let mut verifier_chip =
+            VerifierChip::<C, E, T>::new(config.verifier_config, transcript.as_mut());
 
         layouter.assign_region(
             || "verfiy_single_0",
             |mut region| {
                 let vk = &self.vk;
-                let num_lookups = self.num_proofs * vk.cs.lookups.len();
-                let perm_chunk_len = vk.cs.degree() - 2;
-                let perm_num_columns = vk.permutation.get_perm_column_num();
+                let num_lookups = self.num_proofs * vk.cs().lookups().len();
+                let perm_chunk_len = vk.cs().degree() - 2;
+                let perm_num_columns = vk.permutation().get_perm_column_num();
                 let mut input_expressions = vec![];
                 let mut table_expressions = vec![];
                 let mut offset = 0usize;
 
-                for argument in vk.cs.lookups.iter() {
+                for argument in vk.cs().lookups().iter() {
                     for input_expression in argument.input_expressions.iter() {
                         input_expressions.push(input_expression.clone());
                     }
@@ -470,32 +492,51 @@ impl<C: CurveAffine + CurveAffine<ScalarExt = N>, N: FieldExt, E: EncodedChallen
                         table_expressions.push(table_expression.clone());
                     }
                 }
+                let omega = vk.get_domain().get_omega();
+                let g1 = C::generator();
+                let gates = vk.gates();
+                let perm_columns = &vk.permutation_columns();
+                let fixed_commitments = &vk.fixed_commitments();
+                let instance_queries = vk.instance_queries();
+                let fixed_queries = vk.fixed_queries();
+                let advice_queries = vk.advice_queries();
+
                 verifier_chip.verify_proof(
                     &mut region,
                     vk,
                     self.log_n,
-                    vk.cs.blinding_factors(),
-                    vk.cs.num_advice_columns,
-                    vk.cs.num_fixed_columns,
+                    vk.cs().blinding_factors(),
+                    vk.cs().num_advice_columns(),
+                    vk.cs().num_fixed_columns(),
                     num_lookups,
                     perm_num_columns,
                     perm_chunk_len,
+                    omega,
+                    g1,
                     input_expressions,
                     table_expressions,
+                    gates,
+                    perm_columns,
+                    fixed_commitments,
                     &self.instance_commitments,
-                    &self.instance_evals,
+                    // &self.instance_evals,
+                    instance_queries,
+                    advice_queries,
+                    fixed_queries,
                     &mut offset,
                 );
                 Ok(())
-            }
+            },
         )
     }
 }
 
 fn main() {
     use halo2::dev::MockProver;
-    use pairing::bn256::Fr as Fp;
-    use pairing::bn256::G1Affine;
+    use halo2::pairing::bn256::Fr as Fp;
+    use halo2::pairing::bn256::G1Affine;
+    use rand_core::SeedableRng;
+    use rand_xorshift::XorShiftRng;
 
     // ANCHOR: test-circuit
     // The number of rows in our circuit cannot exceed 2^k. Since our example
@@ -522,7 +563,10 @@ fn main() {
     };
 
     // Initialize the polynomial commitment parameters
-    let mut rng = thread_rng();
+    let rng = XorShiftRng::from_seed([
+        0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06, 0xbc,
+        0xe5,
+    ]);
     let public_inputs_size = 1;
     let params = Setup::<Bn256>::new(k, rng);
     let params_verifier = Setup::<Bn256>::verifier_params(&params, public_inputs_size).unwrap();
@@ -554,7 +598,8 @@ fn main() {
         &[circuit.clone()],
         &[&[&public_inputs[..]]],
         &mut transcript,
-    ).expect("proof generation should not fail");
+    )
+    .expect("proof generation should not fail");
     let proof: Vec<u8> = transcript.finalize();
     println!("proof size is {:?}", proof.len());
 
@@ -573,10 +618,10 @@ fn main() {
             pk.get_vk(),
             &[&[&public_inputs[..]]],
             &mut transcript,
-        ).unwrap()
+        )
+        .unwrap()
     ));
     println!("circuit proof valid!");
-
 
     // Single proof circuit
     // 1. generate rns_base and rns_scalar
@@ -584,20 +629,24 @@ fn main() {
 
     // 2. generate instance commitments
     let instance_commitment = {
-        if public_inputs.len() > params_verifier.get_n() - (pk.get_vk().cs.blinding_factors() + 1) {
+        if public_inputs.len() > params_verifier.get_n() - (pk.get_vk().cs().blinding_factors() + 1)
+        {
             panic!("Instance for single proof is too large");
         }
-        params_verifier.commit_lagrange(public_inputs.clone()).to_affine()
+        params_verifier
+            .commit_lagrange(public_inputs.clone())
+            .to_affine()
     };
 
+    let transcript = Some(transcript);
+    let single_proof_transcript = transcript.clone();
     // 3. construct the single proof circuit structure
     let single_proof_circuit = SingleProofCircuit {
         log_n: k as usize,
         num_proofs: 1,
-
-        vk: pk.get_vk().clone(),
-        rns_base,
-        rns_scalar,
+        vk: pk.get_vk(),
+        rns_base: rns_base.clone(),
+        rns_scalar: rns_scalar.clone(),
         transcript,
 
         instance_commitments: vec![Some(instance_commitment)],
@@ -610,7 +659,10 @@ fn main() {
 
     // 4. generate single proof vk and pk
     let k = 25; //TODO: this is just a tmp value
-    let rng = thread_rng();
+    let rng = XorShiftRng::from_seed([
+        0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06, 0xbc,
+        0xe5,
+    ]);
     let public_inputs_size = 1;
     let params = Setup::<Bn256>::new(k, rng);
     let params_verifier = Setup::<Bn256>::verifier_params(&params, public_inputs_size).unwrap();
@@ -621,6 +673,20 @@ fn main() {
     let prover = MockProver::run(k, &circuit, vec![public_inputs.clone()]).unwrap();
     assert_eq!(prover.verify(), Ok(()));
 
+    let single_proof_circuit = SingleProofCircuit {
+        log_n: k as usize,
+        num_proofs: 1,
+
+        vk: pk.get_vk().clone(),
+        rns_base,
+        rns_scalar,
+        transcript: single_proof_transcript,
+
+        instance_commitments: vec![Some(instance_commitment)],
+        instance_evals: vec![None],
+
+        _marker: Default::default(),
+    };
     let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
     // Create a proof
     create_proof(
@@ -629,7 +695,8 @@ fn main() {
         &[single_proof_circuit.clone()],
         &[&[&public_inputs[..]]],
         &mut transcript,
-    ).expect("proof generation should not fail");
+    )
+    .expect("proof generation should not fail");
     let proof: Vec<u8> = transcript.finalize();
     println!("proof size is {:?}", proof.len());
 
@@ -648,7 +715,8 @@ fn main() {
             pk.get_vk(),
             &[&[&public_inputs[..]]],
             &mut transcript,
-        ).unwrap()
+        )
+        .unwrap()
     ));
     println!("circuit proof valid!");
 }

@@ -8,6 +8,7 @@ mod vanishing;
 mod verifier;
 
 pub use verifier::VerifierChip;
+pub use verifier::VerifierConfig;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Theta;

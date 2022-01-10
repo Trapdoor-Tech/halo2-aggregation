@@ -48,6 +48,7 @@ pub trait TranscriptInstructions<C: CurveAffine> {
     ) -> Result<(), Error>;
 }
 
+#[derive(Clone, Debug)]
 pub struct TranscriptConfig {
     c: Column<Advice>,
 }

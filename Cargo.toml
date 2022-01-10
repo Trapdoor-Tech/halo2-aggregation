@@ -11,3 +11,6 @@ halo2wrong = {git = "ssh://git@github.com/trapdoor-tech/halo2wrong", branch="agg
 #halo2 = { path = "../halo2" }
 halo2 = { git="ssh://git@github.com/trapdoor-tech/halo2", branch="kzg-agg2"}
 blake2b_simd = "0.5"
+rand = "0.4"
+rand_core = "0.6"
+rand_xorshift = "0.3"

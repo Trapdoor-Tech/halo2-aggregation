@@ -27,6 +27,7 @@ use std::fmt::format;
 use std::marker::PhantomData;
 use std::ops::MulAssign;
 
+#[derive(Clone, Debug)]
 pub struct VerifierConfig<C: CurveAffine> {
     transcript_config: TranscriptConfig,
     multiopen_config: MultiopenConfig,
@@ -143,11 +144,9 @@ pub(crate) fn compute_expr<C: CurveAffine>(
 impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
     VerifierChip<'a, C, E, T>
 {
-    pub fn new(
-        ecc_chip: BaseFieldEccChip<C>,
-        config: VerifierConfig<C>,
-        transcript: Option<&'a mut T>,
-    ) -> Self {
+    pub fn new(config: VerifierConfig<C>, transcript: Option<&'a mut T>) -> Self {
+        let ecc_chip =
+            BaseFieldEccChip::new(config.base_ecc_config.clone(), config.rns.clone()).unwrap();
         Self {
             ecc_chip: ecc_chip.clone(),
             lookup: LookupChip::new(ecc_chip.clone()),
@@ -164,10 +163,13 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         }
     }
 
-    pub fn configure(meta: &mut ConstraintSystem<C::ScalarExt>) -> VerifierConfig<C> {
+    pub fn configure(
+        meta: &mut ConstraintSystem<C::ScalarExt>,
+        bit_len_limb: usize,
+    ) -> VerifierConfig<C> {
         let main_gate_config = MainGate::configure(meta);
         let multiopen_config = MultiopenChip::<C>::configure(meta);
-        let rns = Rns::<C::Base, C::ScalarExt>::construct(64);
+        let rns = Rns::<C::Base, C::ScalarExt>::construct(bit_len_limb);
         let base_ecc_config =
             BaseFieldEccChip::<C>::configure(meta, main_gate_config.clone(), vec![], rns.clone());
         let transcript_config = TranscriptChip::<C>::configure(meta);
