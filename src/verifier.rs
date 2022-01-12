@@ -314,7 +314,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         let x = transcript_chip.squeeze_challenge_scalar::<X>(region, offset)?;
 
         let mut inst_evals = vec![];
-        for _ in 0..inst_comms.len() {
+        for _ in 0..instance_queries.len() {
             let eval = {
                 match self.transcript.as_mut() {
                     None => None,
@@ -327,7 +327,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         }
 
         let mut adv_evals = vec![];
-        for _ in (0..num_adv_columns).into_iter() {
+        for _ in (0..advice_queries.len()).into_iter() {
             let eval = {
                 match self.transcript.as_mut() {
                     None => None,
@@ -340,7 +340,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         }
 
         let mut fixed_evals = vec![];
-        for _ in (0..num_fixed_columns).into_iter() {
+        for _ in (0..fixed_queries.len()).into_iter() {
             let eval = {
                 match self.transcript.as_mut() {
                     None => None,

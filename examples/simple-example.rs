@@ -4,7 +4,7 @@ use halo2::arithmetic::CurveAffine;
 use halo2::pairing::bn256::Bn256;
 use halo2::pairing::group::Curve;
 use halo2::plonk::{create_proof, keygen_pk, keygen_vk, verify_proof, VerifyingKey};
-use halo2::poly::commitment::Setup;
+use halo2::poly::commitment::{Params, Setup};
 use halo2::transcript::{
     Blake2bRead, Blake2bWrite, Challenge255, EncodedChallenge, TranscriptRead,
 };
@@ -371,16 +371,17 @@ struct SingleProofConfig<C: CurveAffine> {
     verifier_config: VerifierConfig<C>,
 }
 
-fn rns<C: CurveAffine, N: FieldExt>() -> (Rns<C::Base, N>, Rns<C::ScalarExt, N>) {
-    let rns_base = Rns::<C::Base, N>::construct(BIT_LEN_LIMB);
-    let rns_scalar = Rns::<C::Scalar, N>::construct(BIT_LEN_LIMB);
-    (rns_base, rns_scalar)
-}
+// fn rns<C: CurveAffine, N: FieldExt>() -> (Rns<C::Base, N>, Rns<C::ScalarExt, N>) {
+//     let rns_base = Rns::<C::Base, N>::construct(BIT_LEN_LIMB);
+//     let rns_scalar = Rns::<C::Scalar, N>::construct(BIT_LEN_LIMB);
+//     (rns_base, rns_scalar)
+// }
 
 fn setup<C: CurveAffine, N: FieldExt>(
     k_override: u32,
-) -> (Rns<C::Base, N>, Rns<C::ScalarExt, N>, u32) {
-    let (rns_base, rns_scalar) = rns::<C, N>();
+    // ) -> (Rns<C::Base, N>, Rns<C::ScalarExt, N>, u32) {
+) -> u32 {
+    // let (rns_base, rns_scalar) = rns::<C, N>();
     let bit_len_lookup = BIT_LEN_LIMB / NUMBER_OF_LOOKUP_LIMBS;
     #[cfg(not(feature = "no_lookup"))]
     let mut k: u32 = (bit_len_lookup + 1) as u32;
@@ -389,7 +390,8 @@ fn setup<C: CurveAffine, N: FieldExt>(
     if k_override != 0 {
         k = k_override;
     }
-    (rns_base, rns_scalar, k)
+    // (rns_base, rns_scalar, k)
+    k
 }
 
 // impl SingleProofConfig {
@@ -414,15 +416,14 @@ fn setup<C: CurveAffine, N: FieldExt>(
 struct SingleProofCircuit<
     'a,
     C: CurveAffine,
-    N: FieldExt,
     E: EncodedChallenge<C>,
     T: TranscriptRead<C, E> + Clone,
 > {
     log_n: usize,
     num_proofs: usize,
     vk: &'a VerifyingKey<C>,
-    rns_base: Rns<C::Base, N>,
-    rns_scalar: Rns<C::ScalarExt, N>,
+    // rns_base: Rns<C::Base, N>,
+    // rns_scalar: Rns<C::ScalarExt, N>,
     transcript: Option<T>,
 
     instance_commitments: Vec<Option<C>>,
@@ -430,13 +431,8 @@ struct SingleProofCircuit<
     _marker: PhantomData<E>,
 }
 
-impl<
-        'a,
-        C: CurveAffine + CurveAffine<ScalarExt = N>,
-        N: FieldExt,
-        E: EncodedChallenge<C>,
-        T: 'a + Clone + TranscriptRead<C, E>,
-    > Circuit<N> for SingleProofCircuit<'a, C, N, E, T>
+impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: 'a + Clone + TranscriptRead<C, E>>
+    Circuit<C::ScalarExt> for SingleProofCircuit<'a, C, E, T>
 {
     type Config = SingleProofConfig<C>;
     type FloorPlanner = SimpleFloorPlanner;
@@ -446,8 +442,8 @@ impl<
             log_n: self.log_n,
             num_proofs: self.num_proofs,
             vk: self.vk.clone(),
-            rns_base: self.rns_base.clone(),
-            rns_scalar: self.rns_scalar.clone(),
+            // rns_base: self.rns_base.clone(),
+            // rns_scalar: self.rns_scalar.clone(),
             // transcript: self.transcript.clone(),
             transcript: None,
 
@@ -457,7 +453,7 @@ impl<
         }
     }
 
-    fn configure(meta: &mut ConstraintSystem<N>) -> Self::Config {
+    fn configure(meta: &mut ConstraintSystem<C::ScalarExt>) -> Self::Config {
         let verifier_config = VerifierChip::<'a, C, E, T>::configure(meta, BIT_LEN_LIMB);
         Self::Config { verifier_config }
     }
@@ -465,7 +461,7 @@ impl<
     fn synthesize(
         &self,
         config: Self::Config,
-        mut layouter: impl Layouter<N>,
+        mut layouter: impl Layouter<C::ScalarExt>,
     ) -> Result<(), Error> {
         let mut transcript = self.transcript.clone();
 
@@ -549,6 +545,7 @@ fn main() {
     let b = Fp::from(3);
     let c = constant * a.square() * b.square();
 
+    // used for keygen
     let empty_circuit = MyCircuit {
         constant,
         a: None,
@@ -583,13 +580,6 @@ fn main() {
     let prover = MockProver::run(k, &circuit, vec![public_inputs.clone()]).unwrap();
     assert_eq!(prover.verify(), Ok(()));
 
-    // If we try some other public input, the proof will fail!
-    //public_inputs[0] += Fp::one();
-    //let prover = MockProver::run(k, &circuit, vec![public_inputs]).unwrap();
-    //assert!(prover.verify().is_err());
-    //println!("circuit satisfied!");
-    // ANCHOR_END: test-circuit
-
     let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
     // Create a proof
     create_proof(
@@ -600,6 +590,7 @@ fn main() {
         &mut transcript,
     )
     .expect("proof generation should not fail");
+
     let proof: Vec<u8> = transcript.finalize();
     println!("proof size is {:?}", proof.len());
 
@@ -621,12 +612,14 @@ fn main() {
         )
         .unwrap()
     ));
-    println!("circuit proof valid!");
+
+    println!("simple-circuit proof valid!");
 
     // Single proof circuit
     // 1. generate rns_base and rns_scalar
-    let (rns_base, rns_scalar, single_proof_k) = setup::<G1Affine, Fp>(0);
+    // let (rns_base, rns_scalar, single_proof_k) = setup::<G1Affine, Fp>(0);
 
+    println!("generate rns");
     // 2. generate instance commitments
     let instance_commitment = {
         if public_inputs.len() > params_verifier.get_n() - (pk.get_vk().cs().blinding_factors() + 1)
@@ -638,15 +631,13 @@ fn main() {
             .to_affine()
     };
 
-    let transcript = Some(transcript);
+    let transcript = Some(Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]));
     let single_proof_transcript = transcript.clone();
     // 3. construct the single proof circuit structure
     let single_proof_circuit = SingleProofCircuit {
         log_n: k as usize,
         num_proofs: 1,
         vk: pk.get_vk(),
-        rns_base: rns_base.clone(),
-        rns_scalar: rns_scalar.clone(),
         transcript,
 
         instance_commitments: vec![Some(instance_commitment)],
@@ -658,42 +649,44 @@ fn main() {
     let single_empty_circuit = single_proof_circuit.without_witnesses();
 
     // 4. generate single proof vk and pk
-    let k = 25; //TODO: this is just a tmp value
+    let k = 20; //TODO: this is just a tmp value
     let rng = XorShiftRng::from_seed([
         0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06, 0xbc,
         0xe5,
     ]);
-    let public_inputs_size = 1;
-    let params = Setup::<Bn256>::new(k, rng);
+    let public_inputs_size = 0;
+    println!("setup parameters");
+    let params_filename = format!("/tmp/halo2-{}.params", k);
+    let params_path = std::path::Path::new(&params_filename);
+    let params = if params_path.exists() {
+        println!("read halo2-{}.params from file", k);
+        let file = std::fs::File::open(params_path).unwrap();
+        Params::read(file).unwrap()
+    } else {
+        println!("create a new setup file");
+        let params = Setup::<Bn256>::new(k, rng);
+        let mut file = std::fs::File::create(params_path).unwrap();
+        params.write(&mut file).unwrap();
+        params
+    };
+
     let params_verifier = Setup::<Bn256>::verifier_params(&params, public_inputs_size).unwrap();
 
+    println!("ready to keygen");
     let vk = keygen_vk(&params, &single_empty_circuit).expect("keygen_vk should not fail");
     let pk = keygen_pk(&params, vk, &single_empty_circuit).expect("keygen_pk should not fail");
 
     let prover = MockProver::run(k, &circuit, vec![public_inputs.clone()]).unwrap();
     assert_eq!(prover.verify(), Ok(()));
+    println!("mock prover succeed!");
 
-    let single_proof_circuit = SingleProofCircuit {
-        log_n: k as usize,
-        num_proofs: 1,
-
-        vk: pk.get_vk().clone(),
-        rns_base,
-        rns_scalar,
-        transcript: single_proof_transcript,
-
-        instance_commitments: vec![Some(instance_commitment)],
-        instance_evals: vec![None],
-
-        _marker: Default::default(),
-    };
     let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
     // Create a proof
     create_proof(
         &params,
         &pk,
         &[single_proof_circuit.clone()],
-        &[&[&public_inputs[..]]],
+        &[&[]],
         &mut transcript,
     )
     .expect("proof generation should not fail");
@@ -710,13 +703,7 @@ fn main() {
     let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
 
     assert!(bool::from(
-        verify_proof(
-            &params_verifier,
-            pk.get_vk(),
-            &[&[&public_inputs[..]]],
-            &mut transcript,
-        )
-        .unwrap()
+        verify_proof(&params_verifier, pk.get_vk(), &[&[]], &mut transcript,).unwrap()
     ));
     println!("circuit proof valid!");
 }

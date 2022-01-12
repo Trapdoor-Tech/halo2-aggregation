@@ -230,11 +230,11 @@ impl<C: CurveAffine> PermutationChip<C> {
         exprs.push(expr2);
 
         // 3. l_0(X) * (ZP_i(x) - ZP_{i-1}(omega^(last)*x)) = 0
-        for i in (0..ev.sets.len() - 1).into_iter() {
+        for i in (1..ev.sets.len()).into_iter() {
             let term = main_gate.sub(
                 region,
                 &ev.sets[i].permutation_product_eval,
-                &ev.sets[i + 1]
+                &ev.sets[i - 1]
                     .permutation_product_last_eval
                     .clone()
                     .unwrap(),
