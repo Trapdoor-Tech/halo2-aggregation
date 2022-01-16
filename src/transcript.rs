@@ -141,6 +141,7 @@ impl<C: CurveAffine> TranscriptChip<C> {
     /// CAUTION: NO CONSTRAINT YET!
     pub fn configure(meta: &mut ConstraintSystem<C::ScalarExt>) -> TranscriptConfig {
         let c = meta.advice_column();
+        meta.enable_equality(c.into());
 
         TranscriptConfig { c }
     }

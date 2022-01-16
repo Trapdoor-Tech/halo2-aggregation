@@ -18,8 +18,8 @@ use halo2_aggregation::{VerifierChip, VerifierConfig};
 use halo2wrong::circuit::ecc::base_field_ecc::BaseFieldEccChip;
 use halo2wrong::circuit::ecc::EccConfig;
 use halo2wrong::circuit::main_gate::{MainGate, MainGateConfig};
-use halo2wrong::circuit::range::RangeChip;
-use halo2wrong::rns::Rns;
+use halo2wrong::circuit::range::{RangeChip, RangeInstructions};
+use halo2wrong::rns::{decompose, decompose_fe, fe_to_big, Rns};
 use rand::thread_rng;
 use std::io::Read;
 
@@ -426,8 +426,7 @@ struct SingleProofCircuit<
     // rns_scalar: Rns<C::ScalarExt, N>,
     transcript: Option<T>,
 
-    instance_commitments: Vec<Option<C>>,
-    instance_evals: Vec<Option<C::ScalarExt>>,
+    num_instance_commitments: usize,
     _marker: PhantomData<E>,
 }
 
@@ -441,20 +440,24 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: 'a + Clone + TranscriptRead<
         Self {
             log_n: self.log_n,
             num_proofs: self.num_proofs,
+            num_instance_commitments: self.num_instance_commitments,
             vk: self.vk.clone(),
             // rns_base: self.rns_base.clone(),
             // rns_scalar: self.rns_scalar.clone(),
             // transcript: self.transcript.clone(),
             transcript: None,
 
-            instance_commitments: vec![None],
-            instance_evals: vec![None],
             _marker: self._marker,
         }
     }
 
     fn configure(meta: &mut ConstraintSystem<C::ScalarExt>) -> Self::Config {
-        let verifier_config = VerifierChip::<'a, C, E, T>::configure(meta, BIT_LEN_LIMB);
+        let instance_column = meta.instance_column();
+        meta.enable_equality(instance_column.into());
+
+        let verifier_config =
+            VerifierChip::<'a, C, E, T>::configure(meta, instance_column, BIT_LEN_LIMB);
+
         Self::Config { verifier_config }
     }
 
@@ -467,64 +470,48 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: 'a + Clone + TranscriptRead<
 
         // TODO: transcript will be replace when it is finished
         let mut verifier_chip =
-            VerifierChip::<C, E, T>::new(config.verifier_config, transcript.as_mut());
+            VerifierChip::<C, E, T>::new(config.verifier_config.clone(), transcript.as_mut());
 
+        verifier_chip.ecc_chip.integer_chip().range_chip().load_limb_range_table(&mut layouter)?;
+        verifier_chip.ecc_chip.integer_chip().range_chip().load_overflow_range_tables(&mut layouter)?;
+
+        let verifier_config = config.verifier_config.clone();
         layouter.assign_region(
             || "verfiy_single_0",
             |mut region| {
-                let vk = &self.vk;
-                let num_lookups = self.num_proofs * vk.cs().lookups().len();
-                let perm_chunk_len = vk.cs().degree() - 2;
-                let perm_num_columns = vk.permutation().get_perm_column_num();
-                let mut input_expressions = vec![];
-                let mut table_expressions = vec![];
-                let mut offset = 0usize;
+                println!("verify_single_0");
+                let mut transcript = self.transcript.clone();
 
-                for argument in vk.cs().lookups().iter() {
-                    for input_expression in argument.input_expressions.iter() {
-                        input_expressions.push(input_expression.clone());
-                    }
-                    for table_expression in argument.table_expressions.iter() {
-                        table_expressions.push(table_expression.clone());
-                    }
-                }
-                let omega = vk.get_domain().get_omega();
-                let g1 = C::generator();
-                let gates = vk.gates();
-                let perm_columns = &vk.permutation_columns();
-                let fixed_commitments = &vk.fixed_commitments();
-                let instance_queries = vk.instance_queries();
-                let fixed_queries = vk.fixed_queries();
-                let advice_queries = vk.advice_queries();
+                // TODO: transcript will be replace when it is finished
+                let mut verifier_chip =
+                    VerifierChip::<C, E, T>::new(verifier_config.clone(), transcript.as_mut());
+                let vk = &self.vk;
 
                 verifier_chip.verify_proof(
                     &mut region,
                     vk,
                     self.log_n,
-                    vk.cs().blinding_factors(),
-                    vk.cs().num_advice_columns(),
-                    vk.cs().num_fixed_columns(),
-                    num_lookups,
-                    perm_num_columns,
-                    perm_chunk_len,
-                    omega,
-                    g1,
-                    input_expressions,
-                    table_expressions,
-                    gates,
-                    perm_columns,
-                    fixed_commitments,
-                    &self.instance_commitments,
-                    // &self.instance_evals,
-                    instance_queries,
-                    advice_queries,
-                    fixed_queries,
-                    &mut offset,
-                );
+                )?;
                 Ok(())
             },
         )
+
     }
+}
+
+fn integer_to_scalars<C: CurveAffine>(b: C::Base) -> Vec<C::ScalarExt> {
+    decompose::<C::ScalarExt>(fe_to_big(b), 4, BIT_LEN_LIMB)
+}
+fn point_to_scalars<C: CurveAffine>(p: &C) -> Vec<C::ScalarExt> {
+    let p = p.coordinates().unwrap();
+    let mut ret = vec![];
+    let px = p.x().clone();
+    let py = p.y().clone();
+
+    ret.extend(&integer_to_scalars::<C>(px));
+    ret.extend(&integer_to_scalars::<C>(py));
+
+    ret
 }
 
 fn main() {
@@ -537,124 +524,124 @@ fn main() {
     // ANCHOR: test-circuit
     // The number of rows in our circuit cannot exceed 2^k. Since our example
     // circuit is very small, we can pick a very small value here.
-    let k = 4;
+    let (sample_log_n, sample_pk, sample_proof, sample_instance_commitment, sample_quad) = {
+        let k = 4;
 
-    // Prepare the private and public inputs to the circuit!
-    let constant = Fp::from(7);
-    let a = Fp::from(2);
-    let b = Fp::from(3);
-    let c = constant * a.square() * b.square();
+        // Prepare the private and public inputs to the circuit!
+        let constant = Fp::from(7);
+        let a = Fp::from(2);
+        let b = Fp::from(3);
+        let c = constant * a.square() * b.square();
 
-    // used for keygen
-    let empty_circuit = MyCircuit {
-        constant,
-        a: None,
-        b: None,
-    };
+        // used for keygen
+        let empty_circuit = MyCircuit {
+            constant,
+            a: None,
+            b: None,
+        };
 
-    // Instantiate the circuit with the private inputs.
-    let circuit = MyCircuit {
-        constant,
-        a: Some(a),
-        b: Some(b),
-    };
+        // Instantiate the circuit with the private inputs.
+        let circuit = MyCircuit {
+            constant,
+            a: Some(a),
+            b: Some(b),
+        };
 
-    // Initialize the polynomial commitment parameters
-    let rng = XorShiftRng::from_seed([
-        0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06, 0xbc,
-        0xe5,
-    ]);
-    let public_inputs_size = 1;
-    let params = Setup::<Bn256>::new(k, rng);
-    let params_verifier = Setup::<Bn256>::verifier_params(&params, public_inputs_size).unwrap();
+        // Initialize the polynomial commitment parameters
+        let rng = XorShiftRng::from_seed([
+            0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
+            0xbc, 0xe5,
+        ]);
+        let public_inputs_size = 1;
+        let params = Setup::<Bn256>::new(k, rng);
+        let params_verifier = Setup::<Bn256>::verifier_params(&params, public_inputs_size).unwrap();
 
-    // Initialize the proving key
-    let vk = keygen_vk(&params, &empty_circuit).expect("keygen_vk should not fail");
-    let pk = keygen_pk(&params, vk, &empty_circuit).expect("keygen_pk should not fail");
+        // Initialize the proving key
+        let vk = keygen_vk(&params, &empty_circuit).expect("keygen_vk should not fail");
+        let pk = keygen_pk(&params, vk, &empty_circuit).expect("keygen_pk should not fail");
 
-    // Arrange the public input. We expose the multiplication result in row 0
-    // of the instance column, so we position it there in our public inputs.
-    let mut public_inputs = vec![c];
+        // Arrange the public input. We expose the multiplication result in row 0
+        // of the instance column, so we position it there in our public inputs.
+        let mut public_inputs = vec![c];
 
-    // Given the correct public input, our circuit will verify.
-    let prover = MockProver::run(k, &circuit, vec![public_inputs.clone()]).unwrap();
-    assert_eq!(prover.verify(), Ok(()));
+        // Given the correct public input, our circuit will verify.
+        let prover = MockProver::run(k, &circuit, vec![public_inputs.clone()]).unwrap();
+        assert_eq!(prover.verify(), Ok(()));
 
-    let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
-    // Create a proof
-    create_proof(
-        &params,
-        &pk,
-        &[circuit.clone()],
-        &[&[&public_inputs[..]]],
-        &mut transcript,
-    )
-    .expect("proof generation should not fail");
+        let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+        // Create a proof
+        create_proof(
+            &params,
+            &pk,
+            &[circuit.clone()],
+            &[&[&public_inputs[..]]],
+            &mut transcript,
+        )
+        .expect("proof generation should not fail");
 
-    let proof: Vec<u8> = transcript.finalize();
-    println!("proof size is {:?}", proof.len());
+        let proof: Vec<u8> = transcript.finalize();
+        println!("proof size is {:?}", proof.len());
 
-    // assert_eq!(
-    //     proof.len(),
-    //     halo2::dev::CircuitCost::<G1, MyCircuit<_>>::measure(K as usize, &circuit)
-    //         .proof_size(2)
-    //         .into(),
-    // );
+        let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
 
-    let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
-
-    assert!(bool::from(
-        verify_proof(
+        let (choice, efw) = verify_proof(
             &params_verifier,
             pk.get_vk(),
             &[&[&public_inputs[..]]],
             &mut transcript,
         )
-        .unwrap()
-    ));
+        .unwrap();
 
-    println!("simple-circuit proof valid!");
+        assert!(bool::from(choice));
 
-    // Single proof circuit
-    // 1. generate rns_base and rns_scalar
-    // let (rns_base, rns_scalar, single_proof_k) = setup::<G1Affine, Fp>(0);
+        println!("simple-circuit proof valid!");
 
-    println!("generate rns");
-    // 2. generate instance commitments
-    let instance_commitment = {
-        if public_inputs.len() > params_verifier.get_n() - (pk.get_vk().cs().blinding_factors() + 1)
-        {
-            panic!("Instance for single proof is too large");
-        }
-        params_verifier
-            .commit_lagrange(public_inputs.clone())
-            .to_affine()
+        let instance_commitment = {
+            if public_inputs.len()
+                > params_verifier.get_n() - (pk.get_vk().cs().blinding_factors() + 1)
+            {
+                panic!("Instance for single proof is too large");
+            }
+            params_verifier
+                .commit_lagrange(public_inputs.clone())
+                .to_affine()
+        };
+
+        (k, pk, proof, instance_commitment, efw)
     };
+    let sample_vk = sample_pk.get_vk();
 
-    let transcript = Some(Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]));
-    let single_proof_transcript = transcript.clone();
-    // 3. construct the single proof circuit structure
+    // construct the single proof circuit structure
+    let sample_transcript = Some(Blake2bRead::<_, _, Challenge255<_>>::init(
+        &sample_proof[..],
+    ));
     let single_proof_circuit = SingleProofCircuit {
-        log_n: k as usize,
+        log_n: sample_log_n as usize,
         num_proofs: 1,
-        vk: pk.get_vk(),
-        transcript,
-
-        instance_commitments: vec![Some(instance_commitment)],
-        instance_evals: vec![None],
-
+        num_instance_commitments: 1,
+        vk: sample_vk,
+        transcript: sample_transcript,
         _marker: Default::default(),
     };
 
     let single_empty_circuit = single_proof_circuit.without_witnesses();
 
     // 4. generate single proof vk and pk
-    let k = 20; //TODO: this is just a tmp value
+    let k = 23; //TODO: this is just a tmp value
     let rng = XorShiftRng::from_seed([
         0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06, 0xbc,
         0xe5,
     ]);
-    let public_inputs_size = 0;
+    let mut public_inputs = point_to_scalars(&sample_instance_commitment);
+    for p in sample_quad {
+        public_inputs.extend(&point_to_scalars(&p));
+    }
+    let public_inputs_size = public_inputs.len();
+
+    let prover = MockProver::run(k, &single_proof_circuit, vec![public_inputs.clone()]).unwrap();
+    assert_eq!(prover.verify(), Ok(()));
+    println!("mock prover succeed!");
+
     println!("setup parameters");
     let params_filename = format!("/tmp/halo2-{}.params", k);
     let params_path = std::path::Path::new(&params_filename);
@@ -676,17 +663,14 @@ fn main() {
     let vk = keygen_vk(&params, &single_empty_circuit).expect("keygen_vk should not fail");
     let pk = keygen_pk(&params, vk, &single_empty_circuit).expect("keygen_pk should not fail");
 
-    let prover = MockProver::run(k, &circuit, vec![public_inputs.clone()]).unwrap();
-    assert_eq!(prover.verify(), Ok(()));
-    println!("mock prover succeed!");
-
+    println!("keygen finished");
     let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
     // Create a proof
     create_proof(
         &params,
         &pk,
         &[single_proof_circuit.clone()],
-        &[&[]],
+        &[&[&public_inputs]],
         &mut transcript,
     )
     .expect("proof generation should not fail");
@@ -702,8 +686,13 @@ fn main() {
 
     let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
 
-    assert!(bool::from(
-        verify_proof(&params_verifier, pk.get_vk(), &[&[]], &mut transcript,).unwrap()
-    ));
+    let (choice, _) = verify_proof(
+        &params_verifier,
+        pk.get_vk(),
+        &[&[&public_inputs]],
+        &mut transcript,
+    )
+    .unwrap();
+    assert!(bool::from(choice));
     println!("circuit proof valid!");
 }

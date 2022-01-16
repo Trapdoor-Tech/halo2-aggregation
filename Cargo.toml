@@ -6,10 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-halo2wrong = { path = "../halo2wrong" }
-#halo2wrong = {git = "ssh://git@github.com/trapdoor-tech/halo2wrong", branch="agg2"}
-halo2 = { path = "../halo2" }
-#halo2 = { git="ssh://git@github.com/trapdoor-tech/halo2", branch="kzg-agg2"}
+#halo2wrong = { path = "../halo2wrong" }
+halo2wrong = {git = "ssh://git@github.com/trapdoor-tech/halo2wrong", branch="agg2"}
+#halo2 = { path = "../halo2" }
+halo2 = { git="ssh://git@github.com/trapdoor-tech/halo2", branch="kzg-agg2"}
 blake2b_simd = "0.5"
 rand = "0.4"
 rand_core = "0.6"
