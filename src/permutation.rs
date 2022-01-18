@@ -256,8 +256,8 @@ impl<C: CurveAffine> PermutationChip<C> {
 
         let mut acc = one;
         for i in (0..perm_polys_len).into_iter() {
-            acc.mul_assign(delta);
             deltas.push(acc);
+            acc.mul_assign(delta);
         }
 
         for (chunk_idx, ((set, columns), perm_evals)) in ev

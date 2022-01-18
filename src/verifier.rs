@@ -324,6 +324,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             fixed_comms.push(point);
         }
         // hash vk into transcript
+        // TODO: maybe put this instance_column?
         {
             let mut hasher = Blake2bParams::new()
                 .hash_length(64)
@@ -530,6 +531,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
 
             let xn_sub_one =
                 sub_by_constant(&main_gate, region, xn.clone(), C::ScalarExt::one(), offset)?;
+            let omega_inv = omega.invert().unwrap();
             for _ in 0..(2 + blinding_factors) {
                 // l_evals[i] = (x^n - 1) / (n*(x - w^i)) * w^i
                 // let omega_i = main_gate.assign_constant(
@@ -556,8 +558,9 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
 
                 let (li, _) = main_gate.div(region, &numerator, &denominator, offset)?;
                 l_evals.push(li);
-                omega_powers.mul_assign(omega);
+                omega_powers.mul_assign(omega_inv);
             }
+            l_evals.reverse();
             assert_eq!(l_evals.len(), 2 + blinding_factors);
             let l_last = l_evals[0].clone();
             let mut l_blind = l_evals[1].clone();

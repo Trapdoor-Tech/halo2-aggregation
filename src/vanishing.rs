@@ -149,9 +149,9 @@ impl<C: CurveAffine> VanishingChip<C> {
         let mut y_acc = y.value();
 
         for expr in expressions.iter().skip(1) {
-            let term = main_gate.mul(region, expr, &y_acc, offset)?;
-            expected_h_eval = main_gate.add(region, &expected_h_eval, &term, offset)?;
-            y_acc = main_gate.mul(region, &y_acc, &y.value(), offset)?;
+            let term = main_gate.mul(region, expected_h_eval, &y.value(), offset)?;
+            expected_h_eval = main_gate.add(region, expr, &term, offset)?;
+            // y_acc = main_gate.mul(region, &y_acc, &y.value(), offset)?;
         }
         let one = C::ScalarExt::one();
         let neg_one = one.neg();
