@@ -472,8 +472,16 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: 'a + Clone + TranscriptRead<
         let mut verifier_chip =
             VerifierChip::<C, E, T>::new(config.verifier_config.clone(), transcript.as_mut());
 
-        verifier_chip.ecc_chip.integer_chip().range_chip().load_limb_range_table(&mut layouter)?;
-        verifier_chip.ecc_chip.integer_chip().range_chip().load_overflow_range_tables(&mut layouter)?;
+        verifier_chip
+            .ecc_chip
+            .integer_chip()
+            .range_chip()
+            .load_limb_range_table(&mut layouter)?;
+        verifier_chip
+            .ecc_chip
+            .integer_chip()
+            .range_chip()
+            .load_overflow_range_tables(&mut layouter)?;
 
         let verifier_config = config.verifier_config.clone();
         layouter.assign_region(
@@ -487,15 +495,10 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: 'a + Clone + TranscriptRead<
                     VerifierChip::<C, E, T>::new(verifier_config.clone(), transcript.as_mut());
                 let vk = &self.vk;
 
-                verifier_chip.verify_proof(
-                    &mut region,
-                    vk,
-                    self.log_n,
-                )?;
+                verifier_chip.verify_proof(&mut region, vk, self.log_n)?;
                 Ok(())
             },
         )
-
     }
 }
 

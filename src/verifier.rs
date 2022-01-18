@@ -23,6 +23,7 @@ use halo2wrong::circuit::integer::IntegerInstructions;
 use halo2wrong::circuit::main_gate::{
     CombinationOption, MainGate, MainGateColumn, MainGateConfig, MainGateInstructions, Term,
 };
+use halo2wrong::circuit::range::RangeInstructions;
 use halo2wrong::circuit::{
     Assigned, AssignedCondition, AssignedInteger, AssignedLimb, AssignedValue,
 };
@@ -30,7 +31,6 @@ use halo2wrong::rns::{Common, Rns};
 use std::fmt::format;
 use std::marker::PhantomData;
 use std::ops::MulAssign;
-use halo2wrong::circuit::range::RangeInstructions;
 
 #[derive(Clone, Debug)]
 pub struct VerifierConfig<C: CurveAffine> {
@@ -181,8 +181,12 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         let main_gate_config = MainGate::configure(meta);
         let multiopen_config = MultiopenChip::<C>::configure(meta);
         let rns = Rns::<C::Base, C::ScalarExt>::construct(bit_len_limb);
-        let base_ecc_config =
-            BaseFieldEccChip::<C>::configure(meta, main_gate_config.clone(), rns.overflow_lengths(), rns.clone());
+        let base_ecc_config = BaseFieldEccChip::<C>::configure(
+            meta,
+            main_gate_config.clone(),
+            rns.overflow_lengths(),
+            rns.clone(),
+        );
         let transcript_config = TranscriptChip::<C>::configure(meta);
         VerifierConfig {
             instance_column,
