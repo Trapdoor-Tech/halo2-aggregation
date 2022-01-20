@@ -471,6 +471,14 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             perm_num_columns,
         )?;
 
+        let permutations_evaluated = self.perm.alloc_ev(
+            &mut self.transcript,
+            transcript_chip,
+            region,
+            offset,
+            permutations_committed.clone(),
+        )?;
+
         let lookups_evaluated = lookups_committed
             .into_iter()
             .map(|lookup_committed| -> Result<EvaluatedVar<C>, Error> {
@@ -483,14 +491,6 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
                 )
             })
             .collect::<Result<Vec<_>, Error>>()?;
-
-        let permutations_evaluated = self.perm.alloc_ev(
-            &mut self.transcript,
-            transcript_chip,
-            region,
-            offset,
-            permutations_committed.clone(),
-        )?;
 
         let vanishing = {
             let mut xn = x.value();

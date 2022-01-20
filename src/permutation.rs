@@ -128,6 +128,11 @@ impl<C: CurveAffine> PermutationChip<C> {
                 MainGateColumn::A,
                 offset,
             )?;
+            transcript_chip.common_scalar(region, zp_eval.clone(), offset)?;
+            transcript_chip.common_scalar(region, zp_next_eval.clone(), offset)?;
+            if zp_last_eval.is_some() {
+                transcript_chip.common_scalar(region, zp_last_eval.clone().unwrap(), offset)?;
+            }
             sets.push(EvaluatedSetVar {
                 permutation_product_commitment: zp_commitment,
                 permutation_product_eval: zp_eval,
