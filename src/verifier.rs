@@ -327,6 +327,15 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
                 .assign_point(region, Some(*fixed_comm), offset)?;
             fixed_comms.push(point);
         }
+        let mut perm_sigma_comms = vec![];
+        for sigma_comm in vk.permutation().get_perm_common_commitments() {
+            // TODO: alloc point from constant
+            let p = sigma_comm.coordinates().unwrap();
+            let point = self
+                .ecc_chip
+                .assign_point(region, Some(sigma_comm), offset)?;
+            perm_sigma_comms.push(point);
+        }
         // hash vk into transcript
         // TODO: maybe put this instance_column?
         {
@@ -675,8 +684,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
                 .iter()
                 .flat_map(|p| p.queries())
                 .collect::<Vec<_>>();
-            let perm_common_queries = permutations_committed
-                .permutation_product_commitments
+            let perm_common_queries = perm_sigma_comms
                 .iter()
                 .zip(permutations_common.permutation_evals.iter())
                 .map(|(comm, eval)| {
@@ -724,6 +732,13 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         let w_input = self.assign_point_from_instance(region, instance_row, offset)?;
         let zw_input = self.assign_point_from_instance(region, instance_row, offset)?;
 
+        #[cfg(debug)]
+        {
+            println!("e_input: {:?}", e_input);
+            println!("f_input: {:?}", f_input);
+            println!("w_input: {:?}", w_input);
+            println!("zw_input: {:?}", zw_input);
+        }
         self.ecc_chip.assert_equal(region, &w, &w_input, offset)?;
         self.ecc_chip.assert_equal(region, &zw, &zw_input, offset)?;
         self.ecc_chip.assert_equal(region, &e, &e_input, offset)?;

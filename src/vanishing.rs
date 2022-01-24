@@ -186,6 +186,11 @@ impl<C: CurveAffine> VanishingChip<C> {
             xn_power = main_gate.mul(region, &xn_power, &xn, offset)?;
             H = self.ecc_chip.add(region, &H, &term, offset)?;
         }
+        #[cfg(debug)]
+        {
+            println!("[circuit] expected h eval: {:?}", expected_h_eval);
+            println!("[circuit] H: {:?}", H);
+        }
 
         Ok(EvaluatedVar {
             h_commitment: H,

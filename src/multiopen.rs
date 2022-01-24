@@ -289,11 +289,11 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         // rearrange the verifier queries
         let queries_by_rotation = construct_intermediate_sets::<C, _>(queries);
 
-        let one = Some(C::ScalarExt::one());
-        let one =
-            ecc_chip
-                .main_gate()
-                .assign_constant(region, &one.into(), MainGateColumn::A, offset)?;
+        // let one = Some(C::ScalarExt::one());
+        // let one =
+        //     ecc_chip
+        //         .main_gate()
+        //         .assign_constant(region, &one.into(), MainGateColumn::A, offset)?;
 
         let circuit_omega = ecc_chip.main_gate().assign_constant(
             region,
@@ -302,6 +302,8 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             offset,
         )?;
 
+        println!("circuit v: {:?}", v);
+        println!("circuit u: {:?}", u);
         let circuit_omega_inv = ecc_chip.main_gate().assign_constant(
             region,
             &Some(*omega_inv).into(),
@@ -309,21 +311,21 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             offset,
         )?;
 
-        let omega_x_omega_inv = ecc_chip.main_gate().mul(
-            region,
-            circuit_omega.clone(),
-            circuit_omega_inv.clone(),
-            offset,
-        )?;
+        // let omega_x_omega_inv = ecc_chip.main_gate().mul(
+        //     region,
+        //     circuit_omega.clone(),
+        //     circuit_omega_inv.clone(),
+        //     offset,
+        // )?;
 
         // make sure that omega * omega_inv is 1
-        ecc_chip
-            .main_gate()
-            .assert_equal(region, one, omega_x_omega_inv, offset)?;
+        // ecc_chip
+        //     .main_gate()
+        //     .assert_equal(region, one, omega_x_omega_inv, offset)?;
 
-        let mut witness = ecc_chip.assign_point(region, Some(C::identity()), offset)?;
-        let mut witness_with_aux = ecc_chip.assign_point(region, Some(C::identity()), offset)?;
-        let mut commitment_multi = ecc_chip.assign_point(region, Some(C::identity()), offset)?;
+        // let mut witness = ecc_chip.assign_point(region, Some(C::identity()), offset)?;
+        // let mut witness_with_aux = ecc_chip.assign_point(region, Some(C::identity()), offset)?;
+        // let mut commitment_multi = ecc_chip.assign_point(region, Some(C::identity()), offset)?;
         let mut eval_multi = ecc_chip.main_gate().assign_value(
             region,
             &Some(C::ScalarExt::zero()).into(),
@@ -334,6 +336,10 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         let circuit_x = x.value().clone();
         let circuit_u = u.value().clone();
         let circuit_v = v.value().clone();
+
+        let mut Ws = vec![];
+        let mut ZWs = vec![];
+        let mut Fs = vec![];
 
         for queries_at_a_rotation in queries_by_rotation.iter() {
             let r = queries_at_a_rotation.get_rotation();
@@ -352,23 +358,23 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
                 )
             };
 
-            region.assign_advice(|| "rotation", self.config.rot, rot_offset, || Ok(rot))?;
-            region.assign_advice(
-                || "omega eval",
-                self.config.omega_evals,
-                omega_eval_offset,
-                || Ok(omega_eval),
-            )?;
+            // region.assign_advice(|| "rotation", self.config.rot, rot_offset, || Ok(rot))?;
+            // region.assign_advice(
+            //     || "omega eval",
+            //     self.config.omega_evals,
+            //     omega_eval_offset,
+            //     || Ok(omega_eval),
+            // )?;
 
-            let r = ecc_chip.main_gate().assign_value(
-                region,
-                &Some(rot).into(),
-                MainGateColumn::A,
-                offset,
-            )?;
+            // let r = ecc_chip.main_gate().assign_value(
+            //     region,
+            //     &Some(rot).into(),
+            //     MainGateColumn::A,
+            //     offset,
+            // )?;
 
             // we should calculate omega_eval ^ rot
-            let pow_real_omega = ecc_chip.main_gate().assign_value(
+            let pow_real_omega = ecc_chip.main_gate().assign_constant(
                 region,
                 &Some(omega_eval).into(),
                 MainGateColumn::A,
@@ -384,52 +390,55 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             )?;
 
             let wi = self.read_comm(transcript, region, offset)?;
-
             let z_wi = ecc_chip.mul_var(region, wi.clone(), z.clone(), offset)?;
+            Ws.push(wi);
+            ZWs.push(z_wi);
 
-            witness = ecc_chip.mul_var(region, witness, circuit_u.clone(), offset)?;
-            witness = ecc_chip.add(region, &witness, &wi, offset)?;
+            // witness = ecc_chip.mul_var(region, witness, circuit_u.clone(), offset)?;
+            // witness = ecc_chip.add(region, &witness, &wi, offset)?;
 
-            witness_with_aux =
-                ecc_chip.mul_var(region, witness_with_aux.clone(), circuit_u.clone(), offset)?;
-            witness_with_aux = ecc_chip.add(region, &witness_with_aux, &z_wi, offset)?;
+            // witness_with_aux =
+            //     ecc_chip.mul_var(region, witness_with_aux.clone(), circuit_u.clone(), offset)?;
+            // witness_with_aux = ecc_chip.add(region, &witness_with_aux, &z_wi, offset)?;
 
-            commitment_multi =
-                ecc_chip.mul_var(region, commitment_multi.clone(), circuit_u.clone(), offset)?;
+            // commitment_multi =
+            //     ecc_chip.mul_var(region, commitment_multi.clone(), circuit_u.clone(), offset)?;
             eval_multi =
                 ecc_chip
                     .main_gate()
                     .mul(region, eval_multi.clone(), circuit_u.clone(), offset)?;
 
-            let mut commitment_batch =
-                ecc_chip.assign_point(region, Some(C::identity()), offset)?;
-            let mut eval_batch = ecc_chip.main_gate().assign_value(
-                region,
-                &Some(C::ScalarExt::zero()).into(),
-                MainGateColumn::A,
-                offset,
-            )?;
+            // let mut commitment_batch =
+            //     ecc_chip.assign_point(region, Some(C::identity()), offset)?;
+            let mut commitment_batch = queries_at_a_rotation.queries[0].get_comm();
+            let mut eval_batch = queries_at_a_rotation.queries[0].get_eval();
+            // let mut eval_batch = ecc_chip.main_gate().assign_value(
+            //     region,
+            //     &Some(C::ScalarExt::zero()).into(),
+            //     MainGateColumn::A,
+            //     offset,
+            // )?;
 
-            for query in queries_at_a_rotation.queries.iter() {
-                let query_rot = query.get_rotation().0;
-                let query_rot = if query_rot >= 0 {
-                    C::ScalarExt::from_u128(query_rot as u128)
-                } else {
-                    let query_rot_inv = -query_rot as u128;
-                    -C::ScalarExt::from_u128(query_rot_inv)
-                };
-
-                let query_rot = ecc_chip.main_gate().assign_value(
-                    region,
-                    &Some(query_rot).into(),
-                    MainGateColumn::A,
-                    offset,
-                )?;
-
-                // make sure the rotation are the same
-                ecc_chip
-                    .main_gate()
-                    .assert_equal(region, r.clone(), query_rot, offset)?;
+            for query in queries_at_a_rotation.queries.iter().skip(1) {
+                // let query_rot = query.get_rotation().0;
+                // let query_rot = if query_rot >= 0 {
+                //     C::ScalarExt::from_u128(query_rot as u128)
+                // } else {
+                //     let query_rot_inv = -query_rot as u128;
+                //     -C::ScalarExt::from_u128(query_rot_inv)
+                // };
+                //
+                // let query_rot = ecc_chip.main_gate().assign_value(
+                //     region,
+                //     &Some(query_rot).into(),
+                //     MainGateColumn::A,
+                //     offset,
+                // )?;
+                //
+                // // make sure the rotation are the same
+                // ecc_chip
+                //     .main_gate()
+                //     .assert_equal(region, r.clone(), query_rot, offset)?;
 
                 commitment_batch = ecc_chip.mul_var(
                     region,
@@ -452,23 +461,50 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
                 eval_batch = ecc_chip.main_gate().add(region, eval_batch, eval, offset)?;
             }
 
-            commitment_multi =
-                ecc_chip.add(region, &commitment_multi, &commitment_batch, offset)?;
+            Fs.push(commitment_batch);
+            // commitment_multi =
+            //     ecc_chip.add(region, &commitment_multi, &commitment_batch, offset)?;
             eval_multi = ecc_chip
                 .main_gate()
                 .add(region, eval_multi, eval_batch, offset)?;
         }
 
+        let mut w = Ws[0].clone();
+        for wi in Ws.into_iter().skip(1) {
+            w = ecc_chip.mul_var(region, w.clone(), circuit_u.clone(), offset)?;
+            w = ecc_chip.add(region, &w, &wi, offset)?;
+        }
+
+        let mut zw = ZWs[0].clone();
+        for zwi in ZWs.into_iter().skip(1) {
+            zw = ecc_chip.mul_var(region, zw.clone(), circuit_u.clone(), offset)?;
+            zw = ecc_chip.add(region, &zw, &zwi, offset)?;
+        }
+
+        let mut f = Fs[0].clone();
+        for fi in Fs.into_iter().skip(1) {
+            f = ecc_chip.mul_var(region, f.clone(), circuit_u.clone(), offset)?;
+            f = ecc_chip.add(region, &f, &fi, offset)?;
+        }
+
         let circuit_g1 = ecc_chip.assign_point(region, Some(*g1), offset)?;
-        let circuit_e = ecc_chip.mul_var(region, circuit_g1.clone(), eval_multi.clone(), offset)?;
+        let neg_e = ecc_chip.main_gate().neg(region, eval_multi, offset)?;
+        let circuit_e = ecc_chip.mul_var(region, circuit_g1.clone(), neg_e, offset)?;
 
         let result = MultiopenVar {
-            w: witness.clone(),
-            zw: witness_with_aux.clone(),
-            f: commitment_multi.clone(),
+            w,
+            zw,
+            f,
             e: circuit_e.clone(),
         };
 
+        #[cfg(debug)]
+        {
+            println!("e: {:?}", result.e);
+            println!("f: {:?}", result.f);
+            println!("w: {:?}", result.w);
+            println!("zw: {:?}", result.zw);
+        }
         Ok(result)
     }
 }
