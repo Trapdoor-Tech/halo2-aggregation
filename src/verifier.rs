@@ -732,7 +732,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         let w_input = self.assign_point_from_instance(region, instance_row, offset)?;
         let zw_input = self.assign_point_from_instance(region, instance_row, offset)?;
 
-        #[cfg(debug)]
+        #[cfg(feature = "debug")]
         {
             println!("e_input: {:?}", e_input);
             println!("f_input: {:?}", f_input);

@@ -498,7 +498,7 @@ impl<C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             e: circuit_e.clone(),
         };
 
-        #[cfg(debug)]
+        #[cfg(feature = "debug")]
         {
             println!("e: {:?}", result.e);
             println!("f: {:?}", result.f);
