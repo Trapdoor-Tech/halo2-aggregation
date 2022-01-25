@@ -6,6 +6,7 @@ mod permutation;
 mod transcript;
 mod vanishing;
 mod verifier;
+pub mod aggregation;
 
 pub use verifier::VerifierChip;
 pub use verifier::VerifierConfig;
