@@ -72,6 +72,7 @@ impl<C: CurveAffine> TranscriptInstructions<C> for TranscriptChip<C> {
         let c = self.transcript.squeeze_challenge().get_scalar();
 
         let circuit_c = region.assign_advice(|| "challenge", self.config.c, *offset, || Ok(c))?;
+        *offset += 1;
 
         let assigned_c = AssignedValue::new(circuit_c, Some(c));
 
