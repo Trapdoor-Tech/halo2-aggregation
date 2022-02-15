@@ -81,6 +81,7 @@ impl<C: CurveAffine> LookupChip<C> {
     pub fn alloc_cv<E, T>(
         &mut self,
         transcript: &mut Option<&mut T>,
+        transcript_chip: &mut TranscriptChip<C>,
         region: &mut Region<'_, C::ScalarExt>,
         perm_comms: PermutationCommitmentsVar<C>,
         offset: &mut usize,
@@ -96,6 +97,7 @@ impl<C: CurveAffine> LookupChip<C> {
             }
         };
         let z_lookup = self.ecc_chip.assign_point(region, z_lookup, offset)?;
+        transcript_chip.common_point(region, z_lookup.clone(), offset)?;
 
         Ok(CommittedVar {
             permuted: perm_comms,
@@ -281,7 +283,7 @@ impl<C: CurveAffine> LookupChip<C> {
             };
 
             let expr = main_gate.sub(region, &left, &right, offset)?;
-            main_gate.mul(region, &l_last_sum_blind, &expr, offset)?
+            main_gate.mul(region, &one_sub_last_sum_blind, &expr, offset)?
         };
 
         // 4. l_0(x) * (A'(x) - S'(x)) = 0

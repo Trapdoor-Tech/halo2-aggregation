@@ -392,6 +392,12 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         // sample gamma challenge
         let gamma = transcript_chip.squeeze_challenge_scalar::<Gamma>(region, offset)?;
 
+        #[cfg(feature = "debug")]
+            {
+                println!("beta: {:?}", beta);
+                println!("gamma: {:?}", gamma);
+            }
+
         // { zp_i }
         let permutations_committed = self.perm.alloc_cv(
             &mut self.transcript,
@@ -406,7 +412,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             .into_iter()
             .map(|lookup_permuted| -> Result<CommittedVar<C>, Error> {
                 self.lookup
-                    .alloc_cv(&mut self.transcript, region, lookup_permuted, offset)
+                    .alloc_cv(&mut self.transcript, transcript_chip, region, lookup_permuted, offset)
             })
             .collect::<Result<Vec<_>, Error>>()?;
 
@@ -415,6 +421,8 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
                 .alloc_before_y(&mut self.transcript, transcript_chip, region, offset)?;
 
         let y = transcript_chip.squeeze_challenge_scalar::<Y>(region, offset)?;
+        #[cfg(feature = "debug")]
+        println!("y: {:?}", y);
 
         let vanishing = self.vanishing.alloc_after_y(
             &mut self.transcript,
@@ -595,6 +603,25 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
                     &inst_evals,
                 ));
             }
+
+            expressions.extend(self.perm.expressions(
+                region,
+                &permutations_common,
+                &permutations_evaluated,
+                perm_columns,
+                &adv_evals,
+                &fixed_evals,
+                &inst_evals,
+                l_0.clone(),
+                l_last.clone(),
+                l_blind.clone(),
+                beta.clone(),
+                gamma.clone(),
+                x.clone(),
+                perm_chunk_len,
+                offset,
+            )?);
+
             for lookup_eval in lookups_evaluated.iter() {
                 let expr = self.lookup.expressions(
                     region,
@@ -614,24 +641,6 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
                 )?;
                 expressions.extend(expr);
             }
-
-            expressions.extend(self.perm.expressions(
-                region,
-                &permutations_common,
-                &permutations_evaluated,
-                perm_columns,
-                &adv_evals,
-                &fixed_evals,
-                &inst_evals,
-                l_0.clone(),
-                l_last.clone(),
-                l_blind.clone(),
-                beta.clone(),
-                gamma.clone(),
-                x.clone(),
-                perm_chunk_len,
-                offset,
-            )?);
             self.vanishing.verify(
                 region,
                 vanishing,

@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use halo2::arithmetic::CurveAffine;
 use halo2::pairing::bn256::Bn256;
 use halo2::pairing::group::Curve;
-use halo2::plonk::{create_proof, keygen_pk, keygen_vk, verify_proof, VerifyingKey};
+use halo2::plonk::{create_proof, keygen_pk, keygen_vk, TableColumn, verify_proof, VerifyingKey};
 use halo2::poly::commitment::{Params, Setup};
 use halo2::transcript::{
     Blake2bRead, Blake2bWrite, Challenge255, EncodedChallenge, TranscriptRead,
@@ -80,6 +80,10 @@ struct FieldConfig {
     // multiple sets of instructions.
     s_mul: Selector,
 
+    // of size 2**8
+    u8_range_col: TableColumn,
+    s_u8: Selector,
+
     /// The fixed column used to load constants.
     constant: Column<Fixed>,
 }
@@ -97,6 +101,7 @@ impl<F: FieldExt> FieldChip<F> {
         advice: [Column<Advice>; 2],
         instance: Column<Instance>,
         constant: Column<Fixed>,
+        u8_range_col: TableColumn,
     ) -> <Self as Chip<F>>::Config {
         meta.enable_equality(instance.into());
         meta.enable_constant(constant);
@@ -104,7 +109,15 @@ impl<F: FieldExt> FieldChip<F> {
             meta.enable_equality((*column).into());
         }
         let s_mul = meta.selector();
+        let s_lookup = meta.complex_selector();
 
+        meta.lookup(|meta| {
+            let adv0 = meta.query_advice(advice[0], Rotation::cur());
+            // let adv1 = meta.query_advice(advice[1], Rotation::cur());
+            let s_lookup = meta.query_selector(s_lookup);
+
+            vec![(s_lookup*adv0, u8_range_col)]
+        });
         // Define our multiplication gate!
         meta.create_gate("mul", |meta| {
             // To implement multiplication, we need three advice cells and a selector
@@ -139,6 +152,8 @@ impl<F: FieldExt> FieldChip<F> {
             advice,
             instance,
             s_mul,
+            u8_range_col,
+            s_u8: s_lookup,
             constant,
         }
     }
@@ -188,6 +203,7 @@ impl<F: FieldExt> NumericInstructions<F> for FieldChip<F> {
                     0,
                     || value.ok_or(Error::Synthesis),
                 )?;
+                config.s_u8.enable(&mut region, 0);
                 num = Some(Number { cell, value });
                 Ok(())
             },
@@ -322,7 +338,9 @@ impl<F: FieldExt> Circuit<F> for MyCircuit<F> {
         // Create a fixed column to load constants.
         let constant = meta.fixed_column();
 
-        FieldChip::configure(meta, advice, instance, constant)
+        let u8_range_column = meta.lookup_table_column();
+
+        FieldChip::configure(meta, advice, instance, constant, u8_range_column)
     }
 
     fn synthesize(
@@ -330,6 +348,18 @@ impl<F: FieldExt> Circuit<F> for MyCircuit<F> {
         config: Self::Config,
         mut layouter: impl Layouter<F>,
     ) -> Result<(), Error> {
+        let u8_values: Vec<F> = (0..1<<8).map(|i| F::from_u128(i))
+            .collect();
+        layouter.assign_table(
+            || "u8_table",
+            |mut table| {
+                for (idx, &value) in u8_values.iter().enumerate() {
+                    table.assign_cell(|| "u8 range table", config.u8_range_col, idx, || Ok(value))?;
+                }
+                Ok(())
+            }
+        )?;
+
         let field_chip = FieldChip::<F>::construct(config);
 
         // Load our private values into the circuit.
@@ -528,7 +558,7 @@ fn main() {
     // The number of rows in our circuit cannot exceed 2^k. Since our example
     // circuit is very small, we can pick a very small value here.
     let (sample_log_n, sample_pk, sample_proof, sample_instance_commitment, sample_quad) = {
-        let k = 4;
+        let k = 9;
 
         // Prepare the private and public inputs to the circuit!
         let constant = Fp::from(7);
