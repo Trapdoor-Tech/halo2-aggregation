@@ -36,7 +36,7 @@ use std::ops::MulAssign;
 pub struct VerifierConfig<C: CurveAffine> {
     // used to hold public inputs,
     // e.g., instance_commitments, (w, zw, f, e)
-    instance_column: Column<Instance>,
+    instance_columns: [Column<Instance>; 2],
     transcript_config: TranscriptConfig,
     multiopen_config: MultiopenConfig,
     base_ecc_config: EccConfig,
@@ -175,7 +175,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
 
     pub fn configure(
         meta: &mut ConstraintSystem<C::ScalarExt>,
-        instance_column: Column<Instance>,
+        instance_columns: [Column<Instance>; 2],
         bit_len_limb: usize,
     ) -> VerifierConfig<C> {
         let main_gate_config = MainGate::configure(meta);
@@ -189,7 +189,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         );
         let transcript_config = TranscriptChip::<C>::configure(meta);
         VerifierConfig {
-            instance_column,
+            instance_columns,
             transcript_config,
             multiopen_config,
             base_ecc_config,
@@ -200,20 +200,21 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
     fn assign_point_from_instance(
         &self,
         region: &mut Region<'_, C::ScalarExt>,
+        instance_column: Column<Instance>,
         instance_row: &mut usize,
         offset: &mut usize,
     ) -> Result<AssignedPoint<C::ScalarExt>, Error> {
         let integer_chip = self.ecc_chip.integer_chip();
         let px = integer_chip.assign_integer_from_instance(
             region,
-            self.config.instance_column,
+            instance_column,
             *instance_row,
             offset,
         )?;
         *instance_row += 4;
         let py = integer_chip.assign_integer_from_instance(
             region,
-            self.config.instance_column,
+            instance_column,
             *instance_row,
             offset,
         )?;
@@ -238,7 +239,8 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         let mut input_expressions = vec![];
         let mut table_expressions = vec![];
         let mut offset = 0usize;
-        let mut instance_row = 0usize;
+        let mut vk_instance_row = 0usize;
+        let mut input_instance_row = 0usize;
         let mut fixed_row = 0usize;
 
         for argument in lookups.into_iter() {
@@ -279,7 +281,8 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             advice_queries,
             fixed_queries,
             &mut offset,
-            &mut instance_row,
+            &mut vk_instance_row,
+            &mut input_instance_row,
             &mut fixed_row,
         )
     }
@@ -306,36 +309,39 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         advice_queries: Vec<(Column<Advice>, Rotation)>,
         fixed_queries: Vec<(Column<Fixed>, Rotation)>,
         offset: &mut usize,
-        instance_row: &mut usize,
+        vk_instance_row: &mut usize,
+        input_instance_row: &mut usize,
         fixed_row: &mut usize,
     ) -> Result<AssignedCondition<C::ScalarExt>, Error> {
         let mut inst_comms = vec![];
         for _ in (0..num_instance_commitments).into_iter() {
-            let comm = self.assign_point_from_instance(region, instance_row, offset)?;
+            let comm = self.assign_point_from_instance(region, self.config.instance_columns[1], input_instance_row, offset)?;
             inst_comms.push(comm);
         }
-
-        let transcript_chip = &mut self.transcript_chip;
-        let main_gate = self.ecc_chip.main_gate();
 
         let mut fixed_comms = vec![];
         for fixed_comm in fixed_commitments {
             // TODO: alloc point from constant
-            let p = fixed_comm.coordinates().unwrap();
-            let point = self
-                .ecc_chip
-                .assign_point(region, Some(*fixed_comm), offset)?;
+            let point = self.assign_point_from_instance(region, self.config.instance_columns[0], vk_instance_row, offset)?;
+            //let point = self
+            //    .ecc_chip
+            //    .assign_point(region, Some(*fixed_comm), offset)?;
             fixed_comms.push(point);
         }
         let mut perm_sigma_comms = vec![];
         for sigma_comm in vk.permutation().get_perm_common_commitments() {
             // TODO: alloc point from constant
-            let p = sigma_comm.coordinates().unwrap();
-            let point = self
-                .ecc_chip
-                .assign_point(region, Some(sigma_comm), offset)?;
+            //let p = sigma_comm.coordinates().unwrap();
+            let point = self.assign_point_from_instance(region, self.config.instance_columns[0], vk_instance_row, offset)?;
+            //let point = self
+            //    .ecc_chip
+            //    .assign_point(region, Some(sigma_comm), offset)?;
             perm_sigma_comms.push(point);
         }
+
+        let transcript_chip = &mut self.transcript_chip;
+        let main_gate = self.ecc_chip.main_gate();
+
         // hash vk into transcript
         // TODO: maybe put this instance_column?
         {
@@ -736,10 +742,10 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         let f = multiopen_var.f;
         let e = multiopen_var.e;
         // TODO: assert (w, zw, f, e) equal to their public input counterparts.
-        let e_input = self.assign_point_from_instance(region, instance_row, offset)?;
-        let f_input = self.assign_point_from_instance(region, instance_row, offset)?;
-        let w_input = self.assign_point_from_instance(region, instance_row, offset)?;
-        let zw_input = self.assign_point_from_instance(region, instance_row, offset)?;
+        let e_input = self.assign_point_from_instance(region, self.config.instance_columns[1], input_instance_row, offset)?;
+        let f_input = self.assign_point_from_instance(region, self.config.instance_columns[1], input_instance_row, offset)?;
+        let w_input = self.assign_point_from_instance(region, self.config.instance_columns[1], input_instance_row, offset)?;
+        let zw_input = self.assign_point_from_instance(region, self.config.instance_columns[1], input_instance_row, offset)?;
 
         #[cfg(feature = "debug")]
         {

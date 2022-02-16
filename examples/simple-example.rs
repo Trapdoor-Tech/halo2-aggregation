@@ -482,11 +482,14 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: 'a + Clone + TranscriptRead<
     }
 
     fn configure(meta: &mut ConstraintSystem<C::ScalarExt>) -> Self::Config {
-        let instance_column = meta.instance_column();
-        meta.enable_equality(instance_column.into());
+        let vk_instance_column = meta.instance_column();
+        let input_instance_column = meta.instance_column();
+        meta.enable_equality(vk_instance_column.into());
+        meta.enable_equality(input_instance_column.into());
 
+        let instance_columns = [vk_instance_column, input_instance_column];
         let verifier_config =
-            VerifierChip::<'a, C, E, T>::configure(meta, instance_column, BIT_LEN_LIMB);
+            VerifierChip::<'a, C, E, T>::configure(meta, instance_columns, BIT_LEN_LIMB);
 
         Self::Config { verifier_config }
     }
@@ -665,13 +668,22 @@ fn main() {
         0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06, 0xbc,
         0xe5,
     ]);
+
+    // Generate vk public inputs
+    let mut rns_vk = vec![];
+    for fix_comm in sample_vk.fixed_commitments().iter() {
+        rns_vk.extend(&point_to_scalars(fix_comm));
+    }
+    for perm_comm in sample_vk.permutation().get_perm_common_commitments().iter() {
+        rns_vk.extend(&point_to_scalars(perm_comm));
+    }
     let mut public_inputs = point_to_scalars(&sample_instance_commitment);
     for p in sample_quad {
         public_inputs.extend(&point_to_scalars(&p));
     }
-    let public_inputs_size = public_inputs.len();
+    let public_inputs_size = std::cmp::max(public_inputs.len(), rns_vk.len());
 
-    let prover = MockProver::run(k, &single_proof_circuit, vec![public_inputs.clone()]).unwrap();
+    let prover = MockProver::run(k, &single_proof_circuit, vec![rns_vk.clone(), public_inputs.clone()]).unwrap();
     assert_eq!(prover.verify(), Ok(()));
     println!("mock prover succeed!");
 
@@ -703,7 +715,7 @@ fn main() {
         &params,
         &pk,
         &[single_proof_circuit.clone()],
-        &[&[&public_inputs]],
+        &[&[&rns_vk, &public_inputs]],
         &mut transcript,
     )
     .expect("proof generation should not fail");
@@ -722,7 +734,7 @@ fn main() {
     let (choice, _) = verify_proof(
         &params_verifier,
         pk.get_vk(),
-        &[&[&public_inputs]],
+        &[&[&rns_vk, &public_inputs]],
         &mut transcript,
     )
     .unwrap();
