@@ -528,7 +528,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: 'a + Clone + TranscriptRead<
                     VerifierChip::<C, E, T>::new(verifier_config.clone(), transcript.as_mut());
                 let vk = &self.vk;
 
-                verifier_chip.verify_proof(&mut region, vk, self.log_n)?;
+                verifier_chip.verify_proof(&mut region, vk, self.log_n, 0, 0)?;
                 Ok(())
             },
         )

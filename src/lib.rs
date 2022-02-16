@@ -41,5 +41,10 @@ type ChallengeU<F> = ChallengeScalarVar<F, U>;
 pub struct V;
 type ChallengeV<F> = ChallengeScalarVar<F, V>;
 
+// Alpha is used in agg (e, f, w, zw) linear combinations
+#[derive(Clone, Copy, Debug)]
+pub struct Alpha;
+type ChallengeAlpha<F> = ChallengeScalarVar<F, Alpha>;
+
 #[cfg(test)]
 mod tests {}

@@ -197,6 +197,23 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         }
     }
 
+    pub fn configure_from_common(
+        meta: &mut ConstraintSystem<C::ScalarExt>,
+        instance_columns: [Column<Instance>; 2],
+        base_ecc_config: EccConfig,
+        transcript_config: TranscriptConfig,
+        rns: Rns<C::Base, C::ScalarExt>,
+    ) -> VerifierConfig<C> {
+        let multiopen_config = MultiopenChip::<C>::configure(meta);
+        VerifierConfig {
+            instance_columns,
+            transcript_config,
+            multiopen_config,
+            base_ecc_config,
+            rns,
+        }
+    }
+
     fn assign_point_from_instance(
         &self,
         region: &mut Region<'_, C::ScalarExt>,
@@ -230,7 +247,9 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         region: &mut Region<'_, C::ScalarExt>,
         vk: &VerifyingKey<C>,
         log_n: usize,
-    ) -> Result<AssignedCondition<C::ScalarExt>, Error> {
+        vk_instance_head: usize,
+        single_input_instance_head: usize,
+    ) -> Result<(AssignedPoint<C::ScalarExt>, AssignedPoint<C::ScalarExt>, AssignedPoint<C::ScalarExt>, AssignedPoint<C::ScalarExt>), Error> {
         let cs = vk.cs();
         let lookups = cs.lookups();
         let num_lookups = lookups.len();
@@ -239,8 +258,8 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         let mut input_expressions = vec![];
         let mut table_expressions = vec![];
         let mut offset = 0usize;
-        let mut vk_instance_row = 0usize;
-        let mut input_instance_row = 0usize;
+        let mut vk_instance_row = vk_instance_head;
+        let mut input_instance_row = single_input_instance_head;
         let mut fixed_row = 0usize;
 
         for argument in lookups.into_iter() {
@@ -286,6 +305,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
             &mut fixed_row,
         )
     }
+
     fn _verify_proof(
         &mut self,
         region: &mut Region<'_, C::ScalarExt>,
@@ -312,7 +332,7 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         vk_instance_row: &mut usize,
         input_instance_row: &mut usize,
         fixed_row: &mut usize,
-    ) -> Result<AssignedCondition<C::ScalarExt>, Error> {
+    ) -> Result<(AssignedPoint<C::ScalarExt>, AssignedPoint<C::ScalarExt>, AssignedPoint<C::ScalarExt>, AssignedPoint<C::ScalarExt>), Error> {
         let mut inst_comms = vec![];
         for _ in (0..num_instance_commitments).into_iter() {
             let comm = self.assign_point_from_instance(region, self.config.instance_columns[1], input_instance_row, offset)?;
@@ -741,7 +761,6 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         let zw = multiopen_var.zw;
         let f = multiopen_var.f;
         let e = multiopen_var.e;
-        // TODO: assert (w, zw, f, e) equal to their public input counterparts.
         let e_input = self.assign_point_from_instance(region, self.config.instance_columns[1], input_instance_row, offset)?;
         let f_input = self.assign_point_from_instance(region, self.config.instance_columns[1], input_instance_row, offset)?;
         let w_input = self.assign_point_from_instance(region, self.config.instance_columns[1], input_instance_row, offset)?;
@@ -759,11 +778,6 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: TranscriptRead<C, E>>
         self.ecc_chip.assert_equal(region, &e, &e_input, offset)?;
         self.ecc_chip.assert_equal(region, &f, &f_input, offset)?;
 
-        let ret =
-            self.ecc_chip
-                .main_gate()
-                .assign_bit(region, Some(C::ScalarExt::zero()), offset)?;
-
-        Ok(ret)
+        Ok((e, f, w, zw))
     }
 }

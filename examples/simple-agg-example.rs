@@ -7,14 +7,12 @@ use halo2::{
     plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Fixed, Instance, Selector},
     poly::Rotation,
 };
-use halo2::arithmetic::CurveAffine;
+use halo2::arithmetic::{CurveAffine, best_multiexp};
 use halo2::pairing::bn256::Bn256;
 use halo2::pairing::group::Curve;
 use halo2::plonk::{create_proof, keygen_pk, keygen_vk, verify_proof, VerifyingKey};
 use halo2::poly::commitment::{Params, Setup};
-use halo2::transcript::{
-    Blake2bRead, Blake2bWrite, Challenge255, EncodedChallenge, TranscriptRead,
-};
+use halo2::transcript::{Blake2bRead, Blake2bWrite, Challenge255, EncodedChallenge, TranscriptRead, Transcript, ChallengeScalar};
 use halo2wrong::circuit::ecc::base_field_ecc::BaseFieldEccChip;
 use halo2wrong::circuit::ecc::EccConfig;
 use halo2wrong::circuit::main_gate::{MainGate, MainGateConfig};
@@ -24,6 +22,8 @@ use rand::thread_rng;
 
 use halo2_aggregation::{VerifierChip, VerifierConfig};
 use halo2_aggregation::aggregation::{AggregationChip, AggregationConfig};
+use std::ops::Deref;
+use log::debug;
 
 // ANCHOR: instructions
 trait NumericInstructions<F: FieldExt>: Chip<F> {
@@ -398,10 +398,20 @@ struct AggProofCircuit<
     T: TranscriptRead<C, E> + Clone,
 > {
     num_proofs: usize,
+    // all checked proofs log_n s
     all_log_n: Vec<usize>,
+    // All related vks (whether use or not in agg)
     all_known_vks: Vec<&'a VerifyingKey<C>>,
+    // All related vks offset (as order in the instance column)
+    vk_offsets: Vec<usize>,
+    // Record the used vk position
     vk_idx: Vec<usize>,
-    transcripts: Option<Vec<T>>, //Represent the proofs
+
+    // single public offset
+    single_input_offsets: Vec<usize>,
+
+    //Represent the proofs
+    transcripts: Option<Vec<T>>,
 
     _marker: PhantomData<E>,
 }
@@ -417,18 +427,23 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: 'a + Clone + TranscriptRead<
             num_proofs: self.num_proofs,
             all_log_n: self.all_log_n.clone(),
             all_known_vks: self.all_known_vks.clone(),
+            vk_offsets: self.vk_offsets.clone(),
             vk_idx: self.vk_idx.clone(),
+            single_input_offsets: self.single_input_offsets.clone(),
             transcripts: None,
             _marker: self._marker,
         }
     }
 
     fn configure(meta: &mut ConstraintSystem<C::ScalarExt>) -> Self::Config {
-        let instance_column = meta.instance_column();
-        meta.enable_equality(instance_column.into());
+        let vks_instance_column = meta.instance_column();
+        let single_input_instance_column = meta.instance_column();
+        meta.enable_equality(vks_instance_column.into());
+        meta.enable_equality(single_input_instance_column.into());
 
+        let instance_columns = [vks_instance_column, single_input_instance_column];
         let agg_config =
-            AggregationChip::<C, E, T>::configure(meta, instance_column, BIT_LEN_LIMB);
+            AggregationChip::<C, E, T>::configure(meta, instance_columns, BIT_LEN_LIMB);
 
         Self::Config { agg_config }
     }
@@ -438,12 +453,9 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: 'a + Clone + TranscriptRead<
         config: Self::Config,
         mut layouter: impl Layouter<C::ScalarExt>,
     ) -> Result<(), Error> {
-        let aggregation_chip = AggregationChip::new(config.agg_config.clone());
+        let mut aggregation_chip = AggregationChip::new(config.agg_config.clone());
 
         let num_proofs = self.num_proofs;
-
-        if let Some(transcripts) = self.transcripts.as_ref() {
-        }
 
         let transcripts = match self.transcripts.as_ref() {
             Some(transcripts) => {
@@ -455,19 +467,54 @@ impl<'a, C: CurveAffine, E: EncodedChallenge<C>, T: 'a + Clone + TranscriptRead<
 
         assert_eq!(self.vk_idx.len(), num_proofs);
         assert_eq!(self.all_log_n.len(), num_proofs);
+        assert_eq!(transcripts.len(), num_proofs);
+        assert_eq!(self.vk_offsets.len(), num_proofs);
+        assert_eq!(self.single_input_offsets.len(), num_proofs + 1);
 
+        let mut all_w = vec![];
+        let mut all_zw = vec![];
+        let mut all_f = vec![];
+        let mut all_e = vec![];
+
+        // Load range chip related table
+        aggregation_chip.load_range_table_instruction(layouter.namespace(|| "load_range_chip_tables"))?;
+        // Verify every single proof (vk check is included)
         for proof_idx in 0..num_proofs {
             let single_vk_idx = self.vk_idx[proof_idx];
+            // find right vk
             let single_vk = self.all_known_vks[single_vk_idx];
+            // find right proof
             let transcript = transcripts[proof_idx].clone();
-            aggregation_chip.verify_single_proof_instruction(
+            // find right vk instance offset
+            let vk_offset = self.vk_offsets[single_vk_idx];
+            // find right single public input instance offset
+            let single_input_offset = self.single_input_offsets[single_vk_idx];
+            let (e, f, w, zw) = aggregation_chip.verify_single_proof_instruction(
                 layouter.namespace(|| "verify_single"),
                 single_vk,
                 self.all_log_n[proof_idx],
                 proof_idx,
+                vk_offset,
+                single_input_offset,
                 Some(transcript)
-            );
+            )?;
+            all_w.push(w);
+            all_zw.push(zw);
+            all_f.push(f);
+            all_e.push(e);
         }
+
+        // Generate the final (e, f, w, zw) and they will be equal to the public input
+        let start_point = self.single_input_offsets[num_proofs];
+        aggregation_chip.generate_g1_linear_combinations(
+            layouter.namespace(|| "generate_final_points"),
+            all_e,
+            all_f,
+            all_w,
+            all_zw,
+            num_proofs,
+            start_point
+        )?;
 
         Ok(())
     }
@@ -546,8 +593,8 @@ fn main() {
         let vk = keygen_vk(&params, &empty_circuit).expect("keygen_vk should not fail");
         let pk = keygen_pk(&params, vk, &empty_circuit).expect("keygen_pk should not fail");
 
-        let a = Fp::from(i);
-        let b = Fp::from(i + 1);
+        let a = Fp::from(i + 1);
+        let b = Fp::from(i + 2);
         let c = constant * a.square() * b.square();
 
         // Instantiate the circuit with the private inputs.
@@ -577,7 +624,6 @@ fn main() {
                 .expect("proof generation should not fail");
 
             let proof: Vec<u8> = transcript.finalize();
-            println!("proof size is {:?}", proof.len());
 
             let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
 
@@ -613,23 +659,95 @@ fn main() {
         vk_idx.push(i as usize);
     }
 
-
     // construct the aggregation proof circuit structure
     let mut all_known_vks = vec![];
+    let mut vk_offsets = vec![];
+    let mut single_input_offsets = vec![];
     let mut transcripts = vec![];
+    // data filled into vks instance column
+    let mut rns_vks = vec![];
+    let mut vk_offset = 0usize;
+    // data filled into single input instance column
+    let mut single_inputs= vec![];
+    let mut single_input_offset = 0usize;
+    // Calc the g1 combination
+    let mut combine_transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
     for i in 0..proof_to_check as usize {
         let vk = all_known_pks[i].get_vk();
+        all_known_vks.push(vk);
+        // Assemble the rns vk
+        for fixed_commitment in vk.fixed_commitments().iter() {
+            let point_to_scalars = point_to_scalars(fixed_commitment);
+            rns_vks.extend(point_to_scalars);
+        }
+        for perm_commitment in vk.permutation().get_perm_common_commitments().iter() {
+            let point_to_scalars = point_to_scalars(perm_commitment);
+            rns_vks.extend(point_to_scalars);
+        }
+        vk_offsets.push(vk_offset);
+        vk_offset = rns_vks.len();
+
+        // Assemble the single public input
+        single_inputs.extend(&point_to_scalars(&all_instance_commitments[i]));
+        for item in all_quads[i].iter() {
+            single_inputs.extend(&point_to_scalars(item));
+            // Absorb the point
+            combine_transcript.common_point(item.clone()).unwrap();
+        }
+        single_input_offsets.push(single_input_offset);
+        single_input_offset = single_inputs.len();
+
+        // Assemble the proof
         let transcript = Blake2bRead::<_, _, Challenge255<_>>::init(
             &proofs[i][..],
         );
-        all_known_vks.push(vk);
         transcripts.push(transcript);
     }
+    // This offset is the final (e, f, w, zw) start point
+    single_input_offsets.push(single_input_offset);
+
+    // Generate the challenge
+    struct Tmp;
+    let challenge: ChallengeScalar<_, Tmp> = combine_transcript.squeeze_challenge_scalar();
+    let challenge_val = challenge.deref();
+    let mut all_challenges = vec![];
+    let mut current = Fp::one();
+    for _ in 0..proof_to_check {
+        current = current * challenge_val;
+        all_challenges.push(current.clone());
+    }
+    debug!("all_challenge len: {}, all alpha in job: {:?}", all_challenges.len(), all_challenges.clone());
+
+    // Rearrange e, f, w, zw
+    let mut all_e = vec![];
+    let mut all_f = vec![];
+    let mut all_w = vec![];
+    let mut all_zw = vec![];
+    for tuple in all_quads.iter() {
+        all_e.push(tuple[0]);
+        all_f.push(tuple[1]);
+        all_w.push(tuple[2]);
+        all_zw.push(tuple[3]);
+    }
+    // Calc the final (e, f, w, zw)
+    let final_e = best_multiexp(&all_challenges, &all_e).to_affine();
+    let final_f = best_multiexp(&all_challenges, &all_f).to_affine();
+    let final_w = best_multiexp(&all_challenges, &all_w).to_affine();
+    let final_zw = best_multiexp(&all_challenges, &all_zw).to_affine();
+
+    // Generate the final part of the public input (put them in the single input column)
+    single_inputs.extend(&point_to_scalars(&final_e));
+    single_inputs.extend(&point_to_scalars(&final_f));
+    single_inputs.extend(&point_to_scalars(&final_w));
+    single_inputs.extend(&point_to_scalars(&final_zw));
+
     let agg_circuit = AggProofCircuit {
         num_proofs: proof_to_check as usize,
         all_log_n,
         all_known_vks,
+        vk_offsets,
         vk_idx,
+        single_input_offsets,
         transcripts: Some(transcripts),
         _marker: Default::default(),
     };
@@ -637,23 +755,13 @@ fn main() {
     let agg_empty_circuit = agg_circuit.without_witnesses();
 
     // 4. generate single proof vk and pk
-    let k = 27; //TODO: this is just a tmp value
+    let k = 25; //TODO: this is just a tmp value
     let rng = XorShiftRng::from_seed([
         0x59, 0x62, 0xbe, 0x5d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06, 0xbc,
         0xe5,
     ]);
 
-    let mut public_inputs = vec![];
-
-    for i in 0..proof_to_check as usize {
-        let mut public_input = point_to_scalars(&all_instance_commitments[i]);
-        for item in all_quads[i].iter() {
-            public_input.extend(&point_to_scalars(item));
-        }
-        public_inputs.extend(public_input);
-    }
-
-    let prover = MockProver::run(k, &agg_circuit, vec![public_inputs.clone()]).unwrap();
+    let prover = MockProver::run(k, &agg_circuit, vec![rns_vks.clone(), single_inputs.clone()]).unwrap();
     assert_eq!(prover.verify(), Ok(()));
     println!("mock prover succeed!");
 
