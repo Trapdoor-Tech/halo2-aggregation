@@ -90,14 +90,23 @@ impl<C: CurveAffine> TranscriptInstructions<C> for TranscriptChip<C> {
         point: AssignedPoint<C::ScalarExt>,
         offset: &mut usize,
     ) -> Result<(), Error> {
-        let p = point.x().integer().zip(point.y().integer()).map(|(x, y)| {
-            let (x, y) = (
-                big_to_fe::<C::Base>(x.value()),
-                big_to_fe::<C::Base>(y.value()),
-            );
-            let p: Option<_> = C::from_xy(x, y).into();
-            p
-        });
+        let p = point
+            .x()
+            .integer()
+            .zip(point.y().integer())
+            .zip(point.is_identity().value())
+            .map(|((x, y), is_identity)| {
+                if is_identity.is_zero().into() {
+                    let (x, y) = (
+                        big_to_fe::<C::Base>(x.value()),
+                        big_to_fe::<C::Base>(y.value()),
+                    );
+                    let p: Option<_> = C::from_xy(x, y).into();
+                    p
+                } else {
+                    Some(C::identity())
+                }
+            });
 
         if p.is_some() {
             // do computation only when proving
